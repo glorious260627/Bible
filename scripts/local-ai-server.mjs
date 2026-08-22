@@ -257,6 +257,8 @@ function sermonRules(passage) {
 - manuscript.sections도 passageSections와 같은 절 경계를 사용하고, ${passage.start}절부터 ${passage.end}절까지 누락·중복 없이 덮으세요.
 - manuscript는 화면용 요약이 아니라 TTS로 그대로 읽을 실제 구두 설교 원고입니다. 도입 → 맥락 → 구간별 강해 → 은혜와 복음의 연결 → 2026년 한국의 구체적 적용 → 결단 → 기도가 한 편으로 자연스럽게 이어져야 합니다.
 - manuscript 전체는 본문 낭독을 제외하고 한국어 3,200-4,800자, 약 9-14분 분량으로 작성하세요. 제목이나 목록을 늘어놓지 말고 각 문단을 충분히 풀어 쓰세요.
+- 모든 문자열 값에는 완성된 한국어 설교 문장만 쓰세요. JSON 키·중괄호·대괄호·백틱·assistant/system 표지·영문 작성 메모를 문자열 안에 절대 넣지 마세요.
+- closingPrayer는 180-800자의 자연스러운 한국어 기도문으로 쓰고 마지막을 반드시 “아멘.”으로 끝내세요.
 - 각 manuscript section은 반드시 해당 절의 구체적인 말·행동·대조를 먼저 관찰하고, 쉬운 뜻 → 인간의 두려움이나 욕망 → 하나님의 은혜 → 오늘의 응답 순으로 전개하세요.
 - 하나의 중심 명제와 이미지 또는 대조를 설교 전체에서 2-4회 발전시켜 되돌려 사용하세요. 같은 문장을 기계적으로 반복하지 마세요.
 - 도입은 이 본문과 맞닿은 구체적인 일상 장면이나 질문으로 시작하고, 결론은 그 장면으로 돌아와 오늘 가능한 한 가지 응답을 권하세요.
@@ -265,6 +267,89 @@ function sermonRules(passage) {
 - AI가 실제 목회 경험이 있는 것처럼 말하거나, 검증되지 않은 인물 일화·통계·정확한 인용을 만들지 마세요.
 - 특정 교회나 목회자의 고유한 제목, 캐치프레이즈, 말버릇, 개인 경험, 예화를 복제하지 마세요.
 - opening, context, points와 study 항목은 manuscript를 이해하도록 돕는 요약 자료이며 manuscript를 대신하지 않습니다.`;
+}
+
+const GENERATED_META_PATTERN = /```|<\|(?:assistant|system|user|end)|\b(?:assistant|system)\s+(?:to|final)\b|\b(?:json|schema|parser|markdown)\b|(?:topicId|passageSections|gospelConnection|closingPrayer|estimatedMinutes)[`"']*\s*[:=]|[{}\[\]`]/i;
+
+function generatedTextLooksNatural(value, minLength, maxLength, minimumHangulRatio = 0.35) {
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (text.length < minLength || text.length > maxLength || GENERATED_META_PATTERN.test(text)) return false;
+  const compact = text.replace(/\s/g, '');
+  const hangulCount = compact.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]/g)?.length ?? 0;
+  return compact.length > 0 && hangulCount / compact.length >= minimumHangulRatio;
+}
+
+function sermonTextPassesQualityGate(result) {
+  const sermon = result?.sermon;
+  const manuscript = sermon?.manuscript;
+  const manuscriptSections = manuscript?.sections;
+  if (!sermon || !manuscript || !Array.isArray(manuscriptSections)) return false;
+
+  const introduction = manuscript.introduction;
+  const gospelConnection = manuscript.gospelConnection;
+  const conclusion = manuscript.conclusion;
+  if (!Array.isArray(introduction) || introduction.length < 3 || introduction.length > 5
+    || !introduction.every((text) => generatedTextLooksNatural(text, 120, 700))
+    || !manuscriptSections.every((section) => generatedTextLooksNatural(section?.heading, 2, 100, 0.2)
+      && Array.isArray(section?.paragraphs) && section.paragraphs.length >= 3 && section.paragraphs.length <= 6
+      && section.paragraphs.every((text) => generatedTextLooksNatural(text, 140, 850))
+      && generatedTextLooksNatural(section?.bridgeToNext, 30, 320))
+    || !Array.isArray(gospelConnection) || gospelConnection.length < 1 || gospelConnection.length > 3
+    || !gospelConnection.every((text) => generatedTextLooksNatural(text, 120, 700))
+    || !Array.isArray(conclusion) || conclusion.length < 2 || conclusion.length > 4
+    || !conclusion.every((text) => generatedTextLooksNatural(text, 120, 700))
+    || !generatedTextLooksNatural(manuscript.closingPrayer, 180, 800)
+    || !/아멘[.!?]?\s*$/.test(manuscript.closingPrayer)) return false;
+
+  const manuscriptText = [
+    ...introduction,
+    ...manuscriptSections.flatMap((section) => [...section.paragraphs, section.bridgeToNext]),
+    ...gospelConnection,
+    ...conclusion,
+    manuscript.closingPrayer,
+  ].join('');
+  if (manuscriptText.length < 2600 || manuscriptText.length > 5600) return false;
+
+  const supportingText = [
+    sermon.title, sermon.summary, sermon.opening, sermon.context, sermon.illustration, sermon.caution, sermon.decision, sermon.prayer,
+    ...(sermon.passageSections ?? []).flatMap((section) => [section.title, section.explanation]),
+    ...(sermon.points ?? []).flatMap((point) => [point.title, point.body]),
+    ...(sermon.crossReferences ?? []).map((crossReference) => crossReference.connection),
+    ...(sermon.applications ?? []),
+    ...(sermon.questions ?? []),
+  ];
+  return supportingText.every((text) => generatedTextLooksNatural(text, 2, 900, 0.2));
+}
+
+function sermonQualityMetrics(result) {
+  const sermon = result?.sermon ?? {};
+  const manuscript = sermon.manuscript ?? {};
+  const sections = Array.isArray(manuscript.sections) ? manuscript.sections : [];
+  const pieces = [
+    ...(Array.isArray(manuscript.introduction) ? manuscript.introduction : []),
+    ...sections.flatMap((section) => [...(Array.isArray(section?.paragraphs) ? section.paragraphs : []), section?.bridgeToNext]),
+    ...(Array.isArray(manuscript.gospelConnection) ? manuscript.gospelConnection : []),
+    ...(Array.isArray(manuscript.conclusion) ? manuscript.conclusion : []),
+    manuscript.closingPrayer,
+  ].filter((text) => typeof text === 'string');
+  const ratios = pieces.map((text) => {
+    const compact = text.replace(/\s/g, '');
+    return compact.length ? (compact.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]/g)?.length ?? 0) / compact.length : 0;
+  });
+  return {
+    manuscriptChars: pieces.join('').length,
+    maxPieceChars: Math.max(0, ...pieces.map((text) => text.length)),
+    suspiciousPieces: pieces.filter((text) => GENERATED_META_PATTERN.test(text)).length,
+    minimumHangulRatio: ratios.length ? Math.min(...ratios).toFixed(2) : '0.00',
+    introductionCount: Array.isArray(manuscript.introduction) ? manuscript.introduction.length : -1,
+    sectionBounds: sections.map((section) => `${section?.start}-${section?.end}`),
+    paragraphCounts: sections.map((section) => Array.isArray(section?.paragraphs) ? section.paragraphs.length : -1),
+    gospelCount: Array.isArray(manuscript.gospelConnection) ? manuscript.gospelConnection.length : -1,
+    conclusionCount: Array.isArray(manuscript.conclusion) ? manuscript.conclusion.length : -1,
+    closingPrayerChars: typeof manuscript.closingPrayer === 'string' ? manuscript.closingPrayer.length : -1,
+    closesWithAmen: typeof manuscript.closingPrayer === 'string' && /아멘[.!?]?\s*$/.test(manuscript.closingPrayer),
+  };
 }
 
 function sectionsCoverPassage(result, passage) {
@@ -288,7 +373,8 @@ function sectionsCoverPassage(result, passage) {
     && covers(manuscriptSections)
     && manuscriptSections.every((section, index) => section.start === sections[index]?.start && section.end === sections[index]?.end)
     && typeof manuscriptText === 'string' && manuscriptText.length >= 2600
-    && Number.isInteger(manuscript.estimatedMinutes) && manuscript.estimatedMinutes >= 9 && manuscript.estimatedMinutes <= 18;
+    && Number.isInteger(manuscript.estimatedMinutes) && manuscript.estimatedMinutes >= 9 && manuscript.estimatedMinutes <= 18
+    && sermonTextPassesQualityGate(result);
 }
 
 function promptFor(concern, topicId) {
@@ -426,7 +512,10 @@ function startGenerationJob(generation, requestedJobId) {
   running = true;
 
   void runCodex(generation.prompt, controller.signal).then((result) => {
-    if (!sectionsCoverPassage(result, generation.selectedPassage)) throw new Error('invalid_passage_sections');
+    if (!sectionsCoverPassage(result, generation.selectedPassage)) {
+      console.error('[local-ai] quality_gate', JSON.stringify(sermonQualityMetrics(result)));
+      throw new Error('invalid_passage_sections');
+    }
     if (controller.signal.aborted) throw new Error('codex_aborted');
     job.status = 'succeeded';
     job.result = result;
@@ -665,7 +754,10 @@ const server = createServer(async (request, response) => {
   try {
     const generation = resolveGenerationRequest(request.url, await readJsonPayload(request));
     const result = await runCodex(generation.prompt, requestController.signal);
-    if (!sectionsCoverPassage(result, generation.selectedPassage)) throw new Error('invalid_passage_sections');
+    if (!sectionsCoverPassage(result, generation.selectedPassage)) {
+      console.error('[local-ai] quality_gate', JSON.stringify(sermonQualityMetrics(result)));
+      throw new Error('invalid_passage_sections');
+    }
     if (!response.destroyed && !response.writableEnded) sendJson(response, 200, result, origin);
   } catch (error) {
     if (!requestController.signal.aborted && !response.destroyed && !response.writableEnded) {

@@ -13,10 +13,10 @@
     "sermon": {
       "type": "object",
       "properties": {
-        "title": { "type": "string" },
-        "summary": { "type": "string" },
-        "opening": { "type": "string" },
-        "context": { "type": "string" },
+        "title": { "type": "string", "maxLength": 90 },
+        "summary": { "type": "string", "maxLength": 700 },
+        "opening": { "type": "string", "maxLength": 700 },
+        "context": { "type": "string", "maxLength": 800 },
         "passageSections": {
           "type": "array",
           "minItems": 1,
@@ -26,8 +26,8 @@
             "properties": {
               "start": { "type": "integer", "minimum": 1 },
               "end": { "type": "integer", "minimum": 1 },
-              "title": { "type": "string" },
-              "explanation": { "type": "string" }
+              "title": { "type": "string", "maxLength": 100 },
+              "explanation": { "type": "string", "maxLength": 800 }
             },
             "required": ["start", "end", "title", "explanation"],
             "additionalProperties": false
@@ -40,14 +40,14 @@
           "items": {
             "type": "object",
             "properties": {
-              "title": { "type": "string" },
-              "body": { "type": "string" }
+              "title": { "type": "string", "maxLength": 100 },
+              "body": { "type": "string", "maxLength": 900 }
             },
             "required": ["title", "body"],
             "additionalProperties": false
           }
         },
-        "illustration": { "type": "string" },
+        "illustration": { "type": "string", "maxLength": 800 },
         "crossReferences": {
           "type": "array",
           "minItems": 2,
@@ -55,8 +55,8 @@
           "items": {
             "type": "object",
             "properties": {
-              "reference": { "type": "string" },
-              "connection": { "type": "string" }
+              "reference": { "type": "string", "maxLength": 80 },
+              "connection": { "type": "string", "maxLength": 500 }
             },
             "required": ["reference", "connection"],
             "additionalProperties": false
@@ -66,17 +66,17 @@
           "type": "array",
           "minItems": 3,
           "maxItems": 3,
-          "items": { "type": "string" }
+          "items": { "type": "string", "maxLength": 400 }
         },
-        "caution": { "type": "string" },
+        "caution": { "type": "string", "maxLength": 500 },
         "questions": {
           "type": "array",
           "minItems": 3,
           "maxItems": 3,
-          "items": { "type": "string" }
+          "items": { "type": "string", "maxLength": 250 }
         },
-        "decision": { "type": "string" },
-        "prayer": { "type": "string" },
+        "decision": { "type": "string", "maxLength": 700 },
+        "prayer": { "type": "string", "maxLength": 700 },
         "manuscript": {
           "type": "object",
           "properties": {
@@ -85,7 +85,7 @@
               "type": "array",
               "minItems": 3,
               "maxItems": 5,
-              "items": { "type": "string", "minLength": 120 }
+              "items": { "type": "string", "minLength": 120, "maxLength": 700 }
             },
             "sections": {
               "type": "array",
@@ -96,14 +96,14 @@
                 "properties": {
                   "start": { "type": "integer", "minimum": 1 },
                   "end": { "type": "integer", "minimum": 1 },
-                  "heading": { "type": "string" },
+                  "heading": { "type": "string", "maxLength": 100 },
                   "paragraphs": {
                     "type": "array",
                     "minItems": 3,
                     "maxItems": 6,
-                    "items": { "type": "string", "minLength": 140 }
+                    "items": { "type": "string", "minLength": 140, "maxLength": 850 }
                   },
-                  "bridgeToNext": { "type": "string", "minLength": 30 }
+                  "bridgeToNext": { "type": "string", "minLength": 30, "maxLength": 320 }
                 },
                 "required": ["start", "end", "heading", "paragraphs", "bridgeToNext"],
                 "additionalProperties": false
@@ -113,15 +113,15 @@
               "type": "array",
               "minItems": 1,
               "maxItems": 3,
-              "items": { "type": "string", "minLength": 120 }
+              "items": { "type": "string", "minLength": 120, "maxLength": 700 }
             },
             "conclusion": {
               "type": "array",
               "minItems": 2,
               "maxItems": 4,
-              "items": { "type": "string", "minLength": 120 }
+              "items": { "type": "string", "minLength": 120, "maxLength": 700 }
             },
-            "closingPrayer": { "type": "string", "minLength": 180 }
+            "closingPrayer": { "type": "string", "minLength": 180, "maxLength": 800 }
           },
           "required": ["estimatedMinutes", "introduction", "sections", "gospelConnection", "conclusion", "closingPrayer"],
           "additionalProperties": false

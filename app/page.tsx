@@ -82,8 +82,8 @@ const LOCAL_AI_PORT = process.env.NEXT_PUBLIC_BIBLE_LOCAL_AI_PORT || '4317';
 const DEFAULT_LOCAL_AI_TOKEN = process.env.NEXT_PUBLIC_BIBLE_LOCAL_TOKEN || '';
 const DEFAULT_LOCAL_AI_BASE = process.env.NEXT_PUBLIC_BIBLE_LOCAL_AI_BASE || `http://127.0.0.1:${LOCAL_AI_PORT}`;
 const LOCAL_AI_STORAGE_KEY = 'word-guide-local-ai';
-const SERMON_CACHE_KEY = 'word-guide-generated-sermons-v2';
-const SERMON_CACHE_VERSION = 2;
+const SERMON_CACHE_KEY = 'word-guide-generated-sermons-v3';
+const SERMON_CACHE_VERSION = 3;
 
 function normalizedLocalAiBase(value: string) {
   const parsed = new URL(value.trim());
@@ -865,6 +865,17 @@ function readSavedReferences() {
   }
 }
 
+const GENERATED_META_PATTERN = /```|<\|(?:assistant|system|user|end)|\b(?:assistant|system)\s+(?:to|final)\b|\b(?:json|schema|parser|markdown)\b|(?:topicId|passageSections|gospelConnection|closingPrayer|estimatedMinutes)[`"']*\s*[:=]|[{}\[\]`]/i;
+
+function generatedTextLooksNatural(value: unknown, minLength: number, maxLength: number) {
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (text.length < minLength || text.length > maxLength || GENERATED_META_PATTERN.test(text)) return false;
+  const compact = text.replace(/\s/g, '');
+  const hangulCount = compact.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]/g)?.length ?? 0;
+  return compact.length > 0 && hangulCount / compact.length >= 0.35;
+}
+
 function isSermon(value: unknown): value is Sermon {
   if (!value || typeof value !== 'object') return false;
   const item = value as Record<string, unknown>;
@@ -888,19 +899,25 @@ function isSermon(value: unknown): value is Sermon {
     : '';
   const validManuscript = Boolean(manuscript)
     && Number.isInteger(manuscript?.estimatedMinutes) && Number(manuscript?.estimatedMinutes) >= 9 && Number(manuscript?.estimatedMinutes) <= 18
-    && Array.isArray(manuscript?.introduction) && manuscript.introduction.length >= 3 && manuscript.introduction.every((entry) => typeof entry === 'string')
+    && Array.isArray(manuscript?.introduction) && manuscript.introduction.length >= 3 && manuscript.introduction.length <= 5
+    && manuscript.introduction.every((entry) => generatedTextLooksNatural(entry, 120, 700))
     && Array.isArray(manuscriptSections) && manuscriptSections.length >= 1 && manuscriptSections.length <= 6 && manuscriptSections.every((entry) => {
       if (!entry || typeof entry !== 'object') return false;
       const section = entry as Record<string, unknown>;
       return Number.isInteger(section.start) && Number(section.start) >= 1
         && Number.isInteger(section.end) && Number(section.end) >= Number(section.start)
-        && typeof section.heading === 'string' && typeof section.bridgeToNext === 'string'
-        && Array.isArray(section.paragraphs) && section.paragraphs.length >= 3 && section.paragraphs.every((paragraph) => typeof paragraph === 'string');
+        && typeof section.heading === 'string' && section.heading.length <= 100
+        && generatedTextLooksNatural(section.bridgeToNext, 30, 320)
+        && Array.isArray(section.paragraphs) && section.paragraphs.length >= 3 && section.paragraphs.length <= 6
+        && section.paragraphs.every((paragraph) => generatedTextLooksNatural(paragraph, 140, 850));
     })
-    && Array.isArray(manuscript?.gospelConnection) && manuscript.gospelConnection.length >= 1 && manuscript.gospelConnection.every((entry) => typeof entry === 'string')
-    && Array.isArray(manuscript?.conclusion) && manuscript.conclusion.length >= 2 && manuscript.conclusion.every((entry) => typeof entry === 'string')
-    && typeof manuscript?.closingPrayer === 'string'
-    && manuscriptText.length >= 2600;
+    && Array.isArray(manuscript?.gospelConnection) && manuscript.gospelConnection.length >= 1 && manuscript.gospelConnection.length <= 3
+    && manuscript.gospelConnection.every((entry) => generatedTextLooksNatural(entry, 120, 700))
+    && Array.isArray(manuscript?.conclusion) && manuscript.conclusion.length >= 2 && manuscript.conclusion.length <= 4
+    && manuscript.conclusion.every((entry) => generatedTextLooksNatural(entry, 120, 700))
+    && generatedTextLooksNatural(manuscript?.closingPrayer, 180, 800)
+    && /아멘[.!?]?\s*$/.test(String(manuscript?.closingPrayer))
+    && manuscriptText.length >= 2600 && manuscriptText.length <= 5600;
 
   return validManuscript
     && ['title', 'summary', 'opening', 'context', 'illustration', 'caution', 'decision', 'prayer'].every((key) => typeof item[key] === 'string')
