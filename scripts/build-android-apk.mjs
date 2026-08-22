@@ -3,6 +3,7 @@ import {
   access,
   copyFile,
   mkdir,
+  readFile,
   readdir,
   rename,
   rm,
@@ -30,6 +31,14 @@ const artifactDirectory = path.join(projectDirectory, "artifacts");
 const destinationApk = path.join(
   artifactDirectory,
   "oneul-malsseum-debug.apk",
+);
+const androidWebAssetsDirectory = path.join(
+  androidDirectory,
+  "app",
+  "src",
+  "main",
+  "assets",
+  "public",
 );
 
 const isWindows = process.platform === "win32";
@@ -275,6 +284,31 @@ function createBuildEnvironment(javaHome, androidHome) {
   };
 }
 
+async function verifyEmbeddedPersonalAiConfig(personalAi) {
+  const pending = [androidWebAssetsDirectory];
+  let baseEmbedded = false;
+  let tokenEmbedded = false;
+
+  while (pending.length > 0 && (!baseEmbedded || !tokenEmbedded)) {
+    const directory = pending.pop();
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) pending.push(entryPath);
+      else if (entry.isFile() && entry.name.endsWith(".js")) {
+        const source = await readFile(entryPath, "utf8");
+        baseEmbedded ||= source.includes(personalAi.baseUrl);
+        tokenEmbedded ||= source.includes(personalAi.token);
+      }
+    }
+  }
+
+  if (!baseEmbedded || !tokenEmbedded) {
+    throw new BuildError("Android 앱에 개인용 AI 연결 정보가 포함되지 않았습니다. 공개 환경변수 이름을 확인해 주세요.");
+  }
+  console.log("[Android] 개인용 AI 연결 정보 포함 확인 완료");
+}
+
 async function copyApkArtifact() {
   await access(sourceApk, fsConstants.R_OK);
   const sourceStats = await stat(sourceApk);
@@ -317,7 +351,7 @@ async function main() {
   const buildEnvironment = {
     ...createBuildEnvironment(javaHome, androidHome),
     NEXT_PUBLIC_BIBLE_LOCAL_AI_BASE: personalAi.baseUrl,
-    NEXT_PUBLIC_BIBLE_LOCAL_AI_TOKEN: personalAi.token,
+    NEXT_PUBLIC_BIBLE_LOCAL_TOKEN: personalAi.token,
   };
   console.log(`[Android] 개인용 AI 연결: ${personalAi.baseUrl}`);
 
@@ -327,6 +361,7 @@ async function main() {
     [...pnpmLauncher.arguments, "run", "android:sync"],
     { cwd: projectDirectory, env: buildEnvironment },
   );
+  await verifyEmbeddedPersonalAiConfig(personalAi);
 
   const gradleWrapper = path.join(
     androidDirectory,

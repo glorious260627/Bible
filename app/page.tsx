@@ -74,12 +74,51 @@ type BibleBookFile = { book: string; code: string; chapters: string[][] };
 type LocalAiPayload = { topicId: string; urgent: 'none' | Exclude<Urgency, null>; sermon: Sermon };
 type LocalAiConnection = { baseUrl: string; token: string };
 type LocalGenerationResponse = { ok: boolean; status: number; data: unknown };
+type LocalAiStatus = 'unconfigured' | 'checking' | 'connected' | 'offline';
+type GenerationIssueKind = 'not-configured' | 'unauthorized' | 'timeout' | 'offline' | 'invalid';
+type GenerationIssue = { ref: string; kind: GenerationIssueKind; message: string };
 
 const LOCAL_AI_PORT = process.env.NEXT_PUBLIC_BIBLE_LOCAL_AI_PORT || '4317';
 const DEFAULT_LOCAL_AI_TOKEN = process.env.NEXT_PUBLIC_BIBLE_LOCAL_TOKEN || '';
 const DEFAULT_LOCAL_AI_BASE = process.env.NEXT_PUBLIC_BIBLE_LOCAL_AI_BASE || `http://127.0.0.1:${LOCAL_AI_PORT}`;
 const LOCAL_AI_STORAGE_KEY = 'word-guide-local-ai';
-const SERMON_CACHE_KEY = 'word-guide-generated-sermons';
+const SERMON_CACHE_KEY = 'word-guide-generated-sermons-v2';
+const SERMON_CACHE_VERSION = 2;
+
+function normalizedLocalAiBase(value: string) {
+  const parsed = new URL(value.trim());
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('invalid_local_ai_url');
+  return parsed.toString().replace(/\/$/, '');
+}
+
+async function requestLocalAiHealth(connection: LocalAiConnection) {
+  const baseUrl = normalizedLocalAiBase(connection.baseUrl);
+  const headers = { 'X-Bible-Local-Token': connection.token };
+  if (Capacitor.isNativePlatform()) {
+    return (await CapacitorHttp.get({ url: `${baseUrl}/health`, headers, connectTimeout: 8_000, readTimeout: 8_000 })).status;
+  }
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 8_000);
+  try {
+    return (await fetch(`${baseUrl}/health`, { headers, cache: 'no-store', signal: controller.signal })).status;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function describeGenerationIssue(error: unknown, selectedReference: string): GenerationIssue {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/_(401|403)$/.test(message)) {
+    return { ref: selectedReference, kind: 'unauthorized', message: '앱과 PC의 연결 코드가 서로 달라요. 새 APK에 PC 연결 정보를 다시 넣어야 합니다.' };
+  }
+  if ((error instanceof DOMException && error.name === 'AbortError') || message.includes('timeout') || message.includes('aborted')) {
+    return { ref: selectedReference, kind: 'timeout', message: 'PC 코덱스가 제한 시간 안에 설교를 완성하지 못했어요. 잠시 뒤 다시 만들 수 있어요.' };
+  }
+  if (message.includes('invalid_') || /_(400|500)$/.test(message)) {
+    return { ref: selectedReference, kind: 'invalid', message: 'PC에는 연결됐지만 완성된 설교가 품질 검사를 통과하지 못했어요. 임시 글로 대신하지 않고 다시 만들도록 했어요.' };
+  }
+  return { ref: selectedReference, kind: 'offline', message: 'PC의 말씀 서버에 닿지 않았어요. PC와 휴대폰이 같은 와이파이인지, PC 서버가 켜져 있는지 확인해 주세요.' };
+}
 
 const BOOKS: Book[] = [
   { name: '창세기', short: '창', chapters: 50, testament: '구약', group: '율법서', theme: '창조, 인간의 깨어짐, 약속과 믿음의 시작' },
@@ -816,6 +855,22 @@ function isSermon(value: unknown): value is Sermon {
   const item = value as Record<string, unknown>;
   const manuscript = item.manuscript as Record<string, unknown> | undefined;
   const manuscriptSections = manuscript?.sections;
+  const manuscriptText = manuscript && Array.isArray(manuscriptSections)
+    ? [
+        ...(Array.isArray(manuscript.introduction) ? manuscript.introduction : []),
+        ...manuscriptSections.flatMap((entry) => {
+          if (!entry || typeof entry !== 'object') return [];
+          const section = entry as Record<string, unknown>;
+          return [
+            ...(Array.isArray(section.paragraphs) ? section.paragraphs : []),
+            typeof section.bridgeToNext === 'string' ? section.bridgeToNext : '',
+          ];
+        }),
+        ...(Array.isArray(manuscript.gospelConnection) ? manuscript.gospelConnection : []),
+        ...(Array.isArray(manuscript.conclusion) ? manuscript.conclusion : []),
+        typeof manuscript.closingPrayer === 'string' ? manuscript.closingPrayer : '',
+      ].filter((entry): entry is string => typeof entry === 'string').join('')
+    : '';
   const validManuscript = Boolean(manuscript)
     && Number.isInteger(manuscript?.estimatedMinutes) && Number(manuscript?.estimatedMinutes) >= 9 && Number(manuscript?.estimatedMinutes) <= 18
     && Array.isArray(manuscript?.introduction) && manuscript.introduction.length >= 3 && manuscript.introduction.every((entry) => typeof entry === 'string')
@@ -829,7 +884,8 @@ function isSermon(value: unknown): value is Sermon {
     })
     && Array.isArray(manuscript?.gospelConnection) && manuscript.gospelConnection.length >= 1 && manuscript.gospelConnection.every((entry) => typeof entry === 'string')
     && Array.isArray(manuscript?.conclusion) && manuscript.conclusion.length >= 2 && manuscript.conclusion.every((entry) => typeof entry === 'string')
-    && typeof manuscript?.closingPrayer === 'string';
+    && typeof manuscript?.closingPrayer === 'string'
+    && manuscriptText.length >= 2600;
 
   return validManuscript
     && ['title', 'summary', 'opening', 'context', 'illustration', 'caution', 'decision', 'prayer'].every((key) => typeof item[key] === 'string')
@@ -879,7 +935,10 @@ function readCachedSermon(ref: string) {
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(SERMON_CACHE_KEY) || '[]');
     if (!Array.isArray(parsed)) return null;
-    const found = parsed.find((entry) => entry && typeof entry === 'object' && (entry as Record<string, unknown>).ref === ref) as Record<string, unknown> | undefined;
+    const found = parsed.find((entry) => entry && typeof entry === 'object'
+      && (entry as Record<string, unknown>).version === SERMON_CACHE_VERSION
+      && (entry as Record<string, unknown>).source === 'local-ai'
+      && (entry as Record<string, unknown>).ref === ref) as Record<string, unknown> | undefined;
     return found && isSermon(found.sermon) ? found.sermon : null;
   } catch {
     return null;
@@ -890,7 +949,7 @@ function cacheGeneratedSermon(ref: string, sermon: Sermon) {
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(SERMON_CACHE_KEY) || '[]');
     const current = Array.isArray(parsed) ? parsed.filter((entry) => entry && typeof entry === 'object' && (entry as Record<string, unknown>).ref !== ref) : [];
-    const updated = [{ ref, sermon, savedAt: Date.now() }, ...current].slice(0, 36);
+    const updated = [{ version: SERMON_CACHE_VERSION, source: 'local-ai', ref, sermon, savedAt: Date.now() }, ...current].slice(0, 36);
     window.localStorage.setItem(SERMON_CACHE_KEY, JSON.stringify(updated));
   } catch {
     // A sermon still remains available for the current session if device storage is full.
@@ -1001,6 +1060,8 @@ export default function Home() {
   const [localAiDraft, setLocalAiDraft] = useState<LocalAiConnection>({ baseUrl: DEFAULT_LOCAL_AI_BASE, token: DEFAULT_LOCAL_AI_TOKEN });
   const [localAiSettingsOpen, setLocalAiSettingsOpen] = useState(false);
   const [localAiChecking, setLocalAiChecking] = useState(false);
+  const [localAiStatus, setLocalAiStatus] = useState<LocalAiStatus>(DEFAULT_LOCAL_AI_TOKEN ? 'checking' : 'unconfigured');
+  const [generationIssue, setGenerationIssue] = useState<GenerationIssue | null>(null);
   const [customSermon, setCustomSermon] = useState<{ ref: string; sermon: Sermon } | null>(null);
   const generationRequest = useRef(0);
   const questionRequest = useRef(0);
@@ -1017,6 +1078,9 @@ export default function Home() {
 
   const ref = reference(book, chapter, startVerse, endVerse);
   const localPersonalMode = Boolean(localAiConnection.baseUrl.trim() && localAiConnection.token.trim());
+  const curatedSermonAvailable = Boolean(CURATED[`${book.name}-${chapter}-${startVerse}-${endVerse}`]?.manuscript);
+  const generatedSermonAvailable = customSermon?.ref === ref;
+  const completeSermonAvailable = curatedSermonAvailable || generatedSermonAvailable;
   const activeCareTopic = !careResult?.urgent && careResult?.topic.book === book.name
     && careResult.topic.chapter === chapter
     && careResult.topic.start === startVerse
@@ -1103,12 +1167,6 @@ export default function Home() {
     }, delay);
   };
 
-  const normalizedLocalAiBase = (value: string) => {
-    const parsed = new URL(value.trim());
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('invalid_local_ai_url');
-    return parsed.toString().replace(/\/$/, '');
-  };
-
   const requestLocalAi = async (path: '/sermon' | '/passage', payload: object, signal: AbortSignal): Promise<LocalGenerationResponse> => {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     const baseUrl = normalizedLocalAiBase(localAiConnection.baseUrl);
@@ -1178,6 +1236,17 @@ export default function Home() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, []);
+
+  useEffect(() => {
+    if (!localPersonalMode) return;
+    let active = true;
+    void requestLocalAiHealth(localAiConnection).then((status) => {
+      if (active) setLocalAiStatus(status >= 200 && status < 300 ? 'connected' : 'offline');
+    }).catch(() => {
+      if (active) setLocalAiStatus('offline');
+    });
+    return () => { active = false; };
+  }, [localAiConnection, localPersonalMode]);
 
   useEffect(() => {
     const pendingTimers = timers.current;
@@ -1251,7 +1320,6 @@ export default function Home() {
   const selectMobileTab = (nextTab: MobileTab) => {
     setMobileTab(nextTab);
     setHeartFinderOpen(nextTab === 'heart');
-    if (nextTab === 'sermon') setSermonReady(false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -1268,6 +1336,11 @@ export default function Home() {
   };
 
   const startSpeech = (target: TtsTarget = 'sermon') => {
+    if (target === 'sermon' && !completeSermonAvailable) {
+      setMobileTab('sermon');
+      showNotice('실제 AI 설교가 완성된 뒤에 음성으로 들을 수 있어요.', 3200);
+      return;
+    }
     if (passageStatus !== 'ready') {
       showNotice('본문을 불러온 뒤 다시 눌러 주세요.', 2600);
       return;
@@ -1421,6 +1494,7 @@ export default function Home() {
 
   const prepareReading = async (nextBook: Book, nextChapter: number, nextStart: number, nextEnd: number) => {
     const nextRef = reference(nextBook, nextChapter, nextStart, nextEnd);
+    const bundled = Boolean(CURATED[`${nextBook.name}-${nextChapter}-${nextStart}-${nextEnd}`]?.manuscript);
     stopSpeech();
     setMobileTab('bible');
     setHeartFinderOpen(false);
@@ -1435,6 +1509,7 @@ export default function Home() {
     setEndVerse(nextEnd);
     setCareResult(null);
     setCustomSermon(null);
+    setGenerationIssue(null);
     setQuestion('');
     setChat([]);
     setIsGenerating(true);
@@ -1444,6 +1519,7 @@ export default function Home() {
       && passageSectionsCover(cachedSermon.passageSections, nextStart, nextEnd)
       && manuscriptCoversPassage(cachedSermon.manuscript, cachedSermon.passageSections, nextStart, nextEnd)) {
       setCustomSermon({ ref: nextRef, sermon: cachedSermon });
+      setGenerationIssue(null);
       setIsGenerating(false);
       setSermonReady(true);
       showNotice('전에 준비한 설교를 불러왔어요.', 2400);
@@ -1455,8 +1531,11 @@ export default function Home() {
       const controller = new AbortController();
       localAiAbort.current = controller;
       const timeout = schedule(() => controller.abort(), 195_000);
+      let reachedServer = false;
       try {
         const response = await fetchLocalGeneration('/passage', { book: nextBook.name, chapter: nextChapter, start: nextStart, end: nextEnd }, controller.signal);
+        reachedServer = true;
+        setLocalAiStatus('connected');
         if (!response.ok) throw new Error(`local_passage_${response.status}`);
         const payload: unknown = response.data;
         if (!isLocalAiPayload(payload) || payload.topicId !== 'passage' || payload.urgent !== 'none'
@@ -1465,19 +1544,21 @@ export default function Home() {
         if (requestId !== generationRequest.current) return;
         cacheGeneratedSermon(nextRef, payload.sermon);
         setCustomSermon({ ref: nextRef, sermon: payload.sermon });
+        setGenerationIssue(null);
         setIsGenerating(false);
         setSermonReady(true);
         showNotice(`${nextRef} 해설을 준비했어요.`, 2600);
         window.scrollTo({ top: 0, behavior: 'smooth' });
         return;
-      } catch {
+      } catch (error) {
         if (requestId !== generationRequest.current) return;
         setIsGenerating(false);
-        setSermonReady(true);
-        const bundled = Boolean(CURATED[`${nextBook.name}-${nextChapter}-${nextStart}-${nextEnd}`]?.manuscript);
+        setSermonReady(bundled);
+        if (!bundled) setGenerationIssue(describeGenerationIssue(error, nextRef));
+        if (!reachedServer || /_(401|403)$/.test(error instanceof Error ? error.message : String(error))) setLocalAiStatus('offline');
         showNotice(bundled
           ? `PC 연결 대신 앱에 준비된 ${nextRef} 전체 설교를 열었어요.`
-          : 'PC의 개인 AI에 연결하지 못해 기본 본문 안내를 열었어요. PC 서버와 같은 와이파이를 확인해 주세요.', 5200);
+          : '실제 AI 설교를 완성하지 못했어요. 임시 원고로 대신하지 않고 연결 상태를 보여드릴게요.', 5200);
         window.scrollTo({ top: 0, behavior: 'smooth' });
         return;
       } finally {
@@ -1487,13 +1568,15 @@ export default function Home() {
       }
     }
 
-    schedule(() => {
-      if (requestId !== generationRequest.current) return;
-      setIsGenerating(false);
-      setSermonReady(true);
-      showNotice(`${nextRef} 해설을 준비했어요.`, 2600);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }, 720);
+    setIsGenerating(false);
+    setSermonReady(bundled);
+    if (!bundled) {
+      setGenerationIssue({ ref: nextRef, kind: 'not-configured', message: '이 본문의 실제 설교를 만들려면 휴대폰 앱을 PC의 Codex 말씀 서버와 연결해야 해요.' });
+      showNotice('실제 AI 설교를 만들 PC 연결이 필요해요.', 3600);
+    } else {
+      showNotice(`앱에 준비된 ${nextRef} 전체 설교를 열었어요.`, 2600);
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const chooseReading = (reading: typeof QUICK_READINGS[number]) => {
@@ -1534,20 +1617,20 @@ export default function Home() {
 
   const connectLocalAi = async () => {
     setLocalAiChecking(true);
+    setLocalAiStatus('checking');
     try {
       const next = { baseUrl: normalizedLocalAiBase(localAiDraft.baseUrl), token: localAiDraft.token.trim() };
       if (!next.token) throw new Error('missing_connection_token');
-      const headers = { 'X-Bible-Local-Token': next.token };
-      const status = Capacitor.isNativePlatform()
-        ? (await CapacitorHttp.get({ url: `${next.baseUrl}/health`, headers, connectTimeout: 8_000, readTimeout: 8_000 })).status
-        : (await fetch(`${next.baseUrl}/health`, { headers, cache: 'no-store' })).status;
+      const status = await requestLocalAiHealth(next);
       if (status < 200 || status >= 300) throw new Error(`health_${status}`);
       setLocalAiConnection(next);
       setLocalAiDraft(next);
+      setLocalAiStatus('connected');
       window.localStorage.setItem(LOCAL_AI_STORAGE_KEY, JSON.stringify(next));
       setLocalAiSettingsOpen(false);
       showNotice('개인용 AI 설교 서버와 연결됐어요.', 3000);
     } catch {
+      setLocalAiStatus(localAiDraft.token.trim() ? 'offline' : 'unconfigured');
       showNotice('연결하지 못했어요. PC의 주소와 연결 코드를 확인해 주세요.', 4200);
     } finally {
       setLocalAiChecking(false);
@@ -1579,6 +1662,9 @@ export default function Home() {
     const text = concern.trim();
     if (!text) return;
     const result = recommendConcern(text);
+    const concernBook = BOOKS.find((item) => item.name === result.topic.book)!;
+    const concernRef = reference(concernBook, result.topic.chapter, result.topic.start, result.topic.end);
+    const bundled = Boolean(CURATED[`${result.topic.book}-${result.topic.chapter}-${result.topic.start}-${result.topic.end}`]?.manuscript);
     setHeartFinderOpen(false);
     stopSpeech();
     localAiAbort.current?.abort();
@@ -1588,6 +1674,7 @@ export default function Home() {
     setConcern('');
     setQuestion('');
     setChat([]);
+    setGenerationIssue(null);
     if (result.urgent) {
       revealUrgentResult(result);
       return;
@@ -1600,8 +1687,11 @@ export default function Home() {
       const controller = new AbortController();
       localAiAbort.current = controller;
       const timeout = schedule(() => controller.abort(), 195_000);
+      let reachedServer = false;
       try {
         const response = await fetchLocalGeneration('/sermon', { concern: text, topicId: result.topic.id }, controller.signal);
+        reachedServer = true;
+        setLocalAiStatus('connected');
         if (!response.ok) throw new Error(`local_ai_${response.status}`);
         const payload: unknown = response.data;
         if (!isLocalAiPayload(payload) || payload.topicId !== result.topic.id
@@ -1618,17 +1708,20 @@ export default function Home() {
         }
 
         applyCareSelection(result, payload.sermon);
+        setGenerationIssue(null);
         setIsGenerating(false);
         setSermonReady(true);
         showNotice('이 마음에 맞는 말씀 설교를 준비했어요.', 3000);
         window.scrollTo({ top: 0, behavior: 'smooth' });
         return;
-      } catch {
+      } catch (error) {
         if (requestId !== generationRequest.current) return;
         applyCareSelection(result);
         setIsGenerating(false);
-        setSermonReady(true);
-        showNotice('자세한 설교 생성에 연결하지 못해 기본 말씀 추천으로 준비했어요.', 3800);
+        setSermonReady(bundled);
+        if (!bundled) setGenerationIssue(describeGenerationIssue(error, concernRef));
+        if (!reachedServer || /_(401|403)$/.test(error instanceof Error ? error.message : String(error))) setLocalAiStatus('offline');
+        showNotice('어울리는 말씀은 찾았지만 실제 설교는 완성하지 못했어요. 임시 원고로 대신하지 않을게요.', 4400);
         window.scrollTo({ top: 0, behavior: 'smooth' });
         return;
       } finally {
@@ -1638,14 +1731,12 @@ export default function Home() {
       }
     }
 
-    schedule(() => {
-      if (requestId !== generationRequest.current) return;
-      applyCareSelection(result);
-      setIsGenerating(false);
-      setSermonReady(true);
-      showNotice(`${result.topic.label}에 어울리는 말씀과 설교를 준비했어요.`, 2800);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }, 620);
+    applyCareSelection(result);
+    setIsGenerating(false);
+    setSermonReady(bundled);
+    if (!bundled) setGenerationIssue({ ref: concernRef, kind: 'not-configured', message: '마음에 어울리는 말씀은 찾았어요. 실제 맞춤 설교를 만들려면 휴대폰 앱을 PC의 Codex 말씀 서버와 연결해 주세요.' });
+    showNotice(bundled ? `${result.topic.label}에 어울리는 준비된 설교를 열었어요.` : '어울리는 말씀은 찾았고, 실제 설교에는 PC 연결이 필요해요.', 3600);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const submitQuestion = (event: FormEvent) => {
@@ -1679,6 +1770,15 @@ export default function Home() {
     }, 680);
   };
 
+  const localAiLabel = localAiStatus === 'connected'
+    ? 'AI 연결됨'
+    : localAiStatus === 'checking'
+      ? 'AI 확인 중'
+      : localPersonalMode
+        ? 'AI 다시 연결'
+        : 'AI 연결';
+  const visibleGenerationIssue = generationIssue?.ref === ref ? generationIssue : null;
+
   return (
     <main className={`app-shell ${ttsStatus !== 'idle' ? 'mobile-tts-active' : ''}`} style={{ '--reading-scale': fontScale } as React.CSSProperties}>
       <aside className="side-rail">
@@ -1698,8 +1798,8 @@ export default function Home() {
             <span>말씀이 오늘의 삶이 되도록</span>
           </div>
           <div className="top-actions">
-            <button className={`ai-link-button ${localPersonalMode ? 'connected' : ''}`} type="button" onClick={() => { setLocalAiDraft(localAiConnection); setLocalAiSettingsOpen(true); }}>
-              <span aria-hidden="true">{localPersonalMode ? '●' : '○'}</span>{localPersonalMode ? 'AI 연결됨' : 'AI 연결'}
+            <button className={`ai-link-button ${localAiStatus === 'connected' ? 'connected' : ''} ${localAiStatus === 'offline' ? 'offline' : ''}`} type="button" onClick={() => { setLocalAiDraft(localAiConnection); setLocalAiSettingsOpen(true); }}>
+              <span aria-hidden="true">{localAiStatus === 'connected' ? '●' : '○'}</span>{localAiLabel}
             </button>
             <button className="quiet-button" type="button" onClick={changeFont}>가<span aria-hidden="true">⁺</span> 읽기 설정</button>
             <button className="primary-button" type="button" onClick={openPicker}>새 말씀 찾기 <span aria-hidden="true">→</span></button>
@@ -1742,11 +1842,14 @@ export default function Home() {
               <div>
                 <p className="eyebrow accent">함께 읽을 말씀 · {book.testament} {book.group}</p>
                 <button className="passage-title-button" type="button" onClick={openPicker}><h1>{ref.replace('–', '\u2060–\u2060')}</h1><span aria-hidden="true">⌄</span></button>
-                <p className="passage-subtitle"><strong>{customSermon?.ref === ref ? '지금 준비한 AI 설교' : CURATED[`${book.name}-${chapter}-${startVerse}-${endVerse}`]?.manuscript ? '앱에 준비된 전체 설교' : '기본 본문 안내'} · </strong>{sermon.summary}</p>
+                <p className="passage-subtitle">
+                  <strong>{generatedSermonAvailable ? 'PC 코덱스가 만든 실제 설교' : curatedSermonAvailable ? '앱에 준비된 전체 설교' : isGenerating ? 'PC 코덱스가 설교를 만드는 중' : 'AI 설교 준비 필요'} · </strong>
+                  {completeSermonAvailable ? sermon.summary : isGenerating ? '본문 전체를 먼저 읽는 동안 본문에 맞는 설교 원고를 만들고 있어요.' : visibleGenerationIssue?.message ?? '실제 AI 설교가 완성되기 전에는 임시 원고를 보여주지 않아요.'}
+                </p>
               </div>
               <div className="passage-actions">
-                <button className={`voice-button ${ttsTarget === 'sermon' && ttsStatus !== 'idle' ? 'active' : ''}`} type="button" onClick={ttsTarget === 'sermon' && ttsStatus === 'playing' ? pauseSpeech : () => startSpeech('sermon')} disabled={isGenerating || (ttsTarget === 'sermon' && ttsStatus === 'loading')}>
-                  {ttsTarget === 'sermon' && ttsStatus === 'loading' ? '음성 준비 중…' : ttsTarget === 'sermon' && ttsStatus === 'playing' ? 'Ⅱ 설교 멈춤' : ttsTarget === 'sermon' && ttsStatus === 'paused' ? '▶ 설교 계속 듣기' : '▶ 목사님처럼 설교 듣기'}
+                <button className={`voice-button ${ttsTarget === 'sermon' && ttsStatus !== 'idle' ? 'active' : ''}`} type="button" onClick={ttsTarget === 'sermon' && ttsStatus === 'playing' ? pauseSpeech : () => startSpeech('sermon')} disabled={isGenerating || !completeSermonAvailable || (ttsTarget === 'sermon' && ttsStatus === 'loading')}>
+                  {isGenerating ? '설교 만드는 중…' : !completeSermonAvailable ? '설교 준비 필요' : ttsTarget === 'sermon' && ttsStatus === 'loading' ? '음성 준비 중…' : ttsTarget === 'sermon' && ttsStatus === 'playing' ? 'Ⅱ 설교 멈춤' : ttsTarget === 'sermon' && ttsStatus === 'paused' ? '▶ 설교 계속 듣기' : '▶ 목사님처럼 설교 듣기'}
                 </button>
                 {ttsStatus !== 'idle' && <button className="voice-stop" type="button" onClick={stopSpeech}>중지</button>}
                 <button className={`icon-button ${saved ? 'saved' : ''}`} onClick={toggleSaved} type="button" aria-label={saved ? '말씀 저장 해제' : '말씀 저장'}>{saved ? '♥' : '♡'}</button>
@@ -1867,6 +1970,24 @@ export default function Home() {
             </div>
 
             <div className={`mobile-tab-panel mobile-sermon-panel ${mobileTab === 'sermon' ? 'mobile-active' : ''}`} id="mobile-sermon-panel">
+            {!completeSermonAvailable ? (
+              <section className="sermon-unavailable" role="status" aria-live="polite">
+                <span className={`sermon-unavailable-mark ${isGenerating ? 'working' : ''}`} aria-hidden="true">온</span>
+                <p className="eyebrow accent">{ref} · 실제 AI 설교</p>
+                <h1>{isGenerating ? 'PC 코덱스가 본문을 읽고 설교를 만들고 있어요' : '이 본문의 실제 설교는 아직 완성되지 않았어요'}</h1>
+                <p>{isGenerating ? '본문의 흐름을 나누고, 각 구간의 뜻을 오늘의 삶과 연결한 한 편의 설교 원고를 작성 중이에요. 보통 1–3분 정도 걸릴 수 있어요.' : visibleGenerationIssue?.message ?? '본문과 상관없는 임시 글은 설교처럼 보여주지 않아요. PC 코덱스 연결 뒤 이 본문을 다시 선택하면 실제 설교를 만들어요.'}</p>
+                <div className="sermon-connection-state">
+                  <span>PC 연결</span>
+                  <strong>{localAiStatus === 'connected' ? '정상 연결됨' : localAiStatus === 'checking' ? '확인 중' : localPersonalMode ? '연결 안 됨' : '설정 필요'}</strong>
+                </div>
+                <div className="sermon-unavailable-actions">
+                  {localPersonalMode && <button className="primary-button" type="button" disabled={isGenerating} onClick={() => void prepareReading(book, chapter, startVerse, endVerse)}>{isGenerating ? '설교 만드는 중…' : '이 본문 설교 다시 만들기'}</button>}
+                  <button className="quiet-button" type="button" onClick={() => { setLocalAiDraft(localAiConnection); setLocalAiSettingsOpen(true); }}>AI 연결 확인</button>
+                </div>
+                <small>성경 본문 전체는 성경 탭에서 언제든 먼저 읽고 들을 수 있어요.</small>
+              </section>
+            ) : (
+            <>
             <header className="mobile-sermon-header">
               <p className="eyebrow accent">{ref} · 구간별 강해와 설교</p>
               <h1>{sermon.title}</h1>
@@ -2012,6 +2133,8 @@ export default function Home() {
             </section>
               </div>
             </details>
+            </>
+            )}
 
             <details className="safety-details">
               <summary>AI 말씀 안내를 사용할 때 꼭 알아두세요</summary>
@@ -2063,7 +2186,7 @@ export default function Home() {
           <span aria-hidden="true">▤</span><strong>성경</strong>
         </button>
         <button id="mobile-tab-sermon" className={mobileTab === 'sermon' ? 'active' : ''} type="button" role="tab" aria-selected={mobileTab === 'sermon'} aria-controls="mobile-sermon-panel" onClick={() => selectMobileTab('sermon')}>
-          <span aria-hidden="true">♨</span><strong>설교</strong>{sermonReady && <small className="mobile-tab-badge">준비</small>}
+          <span aria-hidden="true">♨</span><strong>설교</strong>{completeSermonAvailable && (sermonReady || curatedSermonAvailable) && !isGenerating && <small className="mobile-tab-badge">준비</small>}
         </button>
         <button id="mobile-tab-heart" className={mobileTab === 'heart' ? 'active' : ''} type="button" role="tab" aria-selected={mobileTab === 'heart'} aria-controls="mobile-heart-panel" onClick={() => selectMobileTab('heart')}>
           <span aria-hidden="true">♡</span><strong>마음</strong>
