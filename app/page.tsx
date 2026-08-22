@@ -91,6 +91,18 @@ function normalizedLocalAiBase(value: string) {
   return parsed.toString().replace(/\/$/, '');
 }
 
+function createLocalAiJobId() {
+  const bytes = new Uint8Array(12);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+}
+
+function generationError(prefix: string, response: LocalGenerationResponse) {
+  const data = response.data as Record<string, unknown> | null;
+  const code = data && typeof data.error === 'string' ? data.error : String(response.status);
+  return new Error(`${prefix}_${code}`);
+}
+
 async function requestLocalAiHealth(connection: LocalAiConnection) {
   const baseUrl = normalizedLocalAiBase(connection.baseUrl);
   const headers = { 'X-Bible-Local-Token': connection.token };
@@ -111,10 +123,13 @@ function describeGenerationIssue(error: unknown, selectedReference: string): Gen
   if (/_(401|403)$/.test(message)) {
     return { ref: selectedReference, kind: 'unauthorized', message: '앱과 PC의 연결 코드가 서로 달라요. 새 APK에 PC 연결 정보를 다시 넣어야 합니다.' };
   }
+  if (message.includes('unknown_generation_job')) {
+    return { ref: selectedReference, kind: 'timeout', message: '설교를 만드는 동안 PC 말씀 서버가 다시 시작됐어요. 아래 버튼을 눌러 처음부터 다시 만들어 주세요.' };
+  }
   if ((error instanceof DOMException && error.name === 'AbortError') || message.includes('timeout') || message.includes('aborted')) {
     return { ref: selectedReference, kind: 'timeout', message: 'PC 코덱스가 제한 시간 안에 설교를 완성하지 못했어요. 잠시 뒤 다시 만들 수 있어요.' };
   }
-  if (message.includes('invalid_') || /_(400|500)$/.test(message)) {
+  if (message.includes('invalid_') || message.includes('codex_generation_failed') || /_(400|404|409|500|502)$/.test(message)) {
     return { ref: selectedReference, kind: 'invalid', message: 'PC에는 연결됐지만 완성된 설교가 품질 검사를 통과하지 못했어요. 임시 글로 대신하지 않고 다시 만들도록 했어요.' };
   }
   return { ref: selectedReference, kind: 'offline', message: 'PC의 말씀 서버에 닿지 않았어요. PC와 휴대폰이 같은 와이파이인지, PC 서버가 켜져 있는지 확인해 주세요.' };
@@ -1167,25 +1182,29 @@ export default function Home() {
     }, delay);
   };
 
-  const requestLocalAi = async (path: '/sermon' | '/passage', payload: object, signal: AbortSignal): Promise<LocalGenerationResponse> => {
+  const requestLocalAi = async (path: string, payload: object | null, signal: AbortSignal, method: 'GET' | 'POST' | 'DELETE' = 'POST'): Promise<LocalGenerationResponse> => {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     const baseUrl = normalizedLocalAiBase(localAiConnection.baseUrl);
     const headers = { 'Content-Type': 'application/json', 'X-Bible-Local-Token': localAiConnection.token };
     if (Capacitor.isNativePlatform()) {
-      const response = await CapacitorHttp.post({
+      const options = {
         url: `${baseUrl}${path}`,
         headers,
-        data: payload,
         connectTimeout: 15_000,
-        readTimeout: 190_000,
-      });
+        readTimeout: 15_000,
+      };
+      const response = method === 'GET'
+        ? await CapacitorHttp.get(options)
+        : method === 'DELETE'
+          ? await CapacitorHttp.delete(options)
+          : await CapacitorHttp.post({ ...options, data: payload });
       if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
       return { ok: response.status >= 200 && response.status < 300, status: response.status, data: response.data };
     }
     const response = await fetch(`${baseUrl}${path}`, {
-      method: 'POST',
+      method,
       headers,
-      body: JSON.stringify(payload),
+      ...(method === 'POST' ? { body: JSON.stringify(payload) } : {}),
       signal,
     });
     let data: unknown = null;
@@ -1193,27 +1212,87 @@ export default function Home() {
     return { ok: response.ok, status: response.status, data };
   };
 
-  const fetchLocalGeneration = async (path: '/sermon' | '/passage', payload: object, signal: AbortSignal) => {
-    let lastResponse: LocalGenerationResponse | null = null;
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      lastResponse = await requestLocalAi(path, payload, signal);
-      if (lastResponse.status !== 429 || attempt === 5) return lastResponse;
+  const fetchLocalGeneration = async (
+    path: '/sermon' | '/passage',
+    payload: object,
+    signal: AbortSignal,
+    onServerResponse?: () => void,
+  ) => {
+    const waitForPoll = (delay: number) => new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'));
+        return;
+      }
+      const finishWaiting = () => {
+        signal.removeEventListener('abort', stopWaiting);
+        resolve();
+      };
+      const retryTimer = window.setTimeout(finishWaiting, delay);
+      const stopWaiting = () => {
+        window.clearTimeout(retryTimer);
+        signal.removeEventListener('abort', stopWaiting);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      signal.addEventListener('abort', stopWaiting, { once: true });
+    });
+
+    let jobId = createLocalAiJobId();
+    let consecutiveNetworkFailures = 0;
+    const cancelServerJob = () => {
+      const cancelController = new AbortController();
+      const cancelTimeout = window.setTimeout(() => cancelController.abort(), 5_000);
+      void requestLocalAi(`/jobs/${jobId}`, null, cancelController.signal, 'DELETE')
+        .catch(() => undefined)
+        .finally(() => window.clearTimeout(cancelTimeout));
+    };
+    signal.addEventListener('abort', cancelServerJob, { once: true });
+
+    try {
+      while (!signal.aborted) {
+        try {
+          const startResponse = await requestLocalAi(`${path}/start`, { ...payload, jobId }, signal);
+          onServerResponse?.();
+          consecutiveNetworkFailures = 0;
+          if (startResponse.status === 429) {
+            await waitForPoll(1_000);
+            continue;
+          }
+          if (!startResponse.ok) return startResponse;
+          const startData = startResponse.data as Record<string, unknown> | null;
+          if (!startData || typeof startData.jobId !== 'string' || !/^[A-Za-z0-9_-]{24}$/.test(startData.jobId)) {
+            return { ok: false, status: 502, data: { error: 'invalid_generation_job' } };
+          }
+          jobId = startData.jobId;
+          break;
+        } catch (error) {
+          if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+          consecutiveNetworkFailures += 1;
+          if (consecutiveNetworkFailures >= 3) throw error;
+          await waitForPoll(850 * consecutiveNetworkFailures);
+        }
+      }
       if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-      await new Promise<void>((resolve, reject) => {
-        const finishWaiting = () => {
-          signal.removeEventListener('abort', stopWaiting);
-          resolve();
-        };
-        const retryTimer = window.setTimeout(finishWaiting, 400 * (attempt + 1));
-        const stopWaiting = () => {
-          window.clearTimeout(retryTimer);
-          signal.removeEventListener('abort', stopWaiting);
-          reject(new DOMException('Aborted', 'AbortError'));
-        };
-        signal.addEventListener('abort', stopWaiting, { once: true });
-      });
+
+      consecutiveNetworkFailures = 0;
+      while (!signal.aborted) {
+        await waitForPoll(900);
+        try {
+          const response = await requestLocalAi(`/jobs/${jobId}`, null, signal, 'GET');
+          onServerResponse?.();
+          consecutiveNetworkFailures = 0;
+          if (response.status === 202) continue;
+          return response;
+        } catch (error) {
+          if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+          consecutiveNetworkFailures += 1;
+          if (consecutiveNetworkFailures >= 12) throw error;
+          await waitForPoll(Math.min(2_000, 500 + consecutiveNetworkFailures * 150));
+        }
+      }
+      throw new DOMException('Aborted', 'AbortError');
+    } finally {
+      signal.removeEventListener('abort', cancelServerJob);
     }
-    return lastResponse!;
   };
 
   useEffect(() => {
@@ -1533,10 +1612,13 @@ export default function Home() {
       const timeout = schedule(() => controller.abort(), 195_000);
       let reachedServer = false;
       try {
-        const response = await fetchLocalGeneration('/passage', { book: nextBook.name, chapter: nextChapter, start: nextStart, end: nextEnd }, controller.signal);
-        reachedServer = true;
-        setLocalAiStatus('connected');
-        if (!response.ok) throw new Error(`local_passage_${response.status}`);
+        const response = await fetchLocalGeneration(
+          '/passage',
+          { book: nextBook.name, chapter: nextChapter, start: nextStart, end: nextEnd },
+          controller.signal,
+          () => { reachedServer = true; setLocalAiStatus('connected'); },
+        );
+        if (!response.ok) throw generationError('local_passage', response);
         const payload: unknown = response.data;
         if (!isLocalAiPayload(payload) || payload.topicId !== 'passage' || payload.urgent !== 'none'
           || !passageSectionsCover(payload.sermon.passageSections, nextStart, nextEnd)
@@ -1689,10 +1771,13 @@ export default function Home() {
       const timeout = schedule(() => controller.abort(), 195_000);
       let reachedServer = false;
       try {
-        const response = await fetchLocalGeneration('/sermon', { concern: text, topicId: result.topic.id }, controller.signal);
-        reachedServer = true;
-        setLocalAiStatus('connected');
-        if (!response.ok) throw new Error(`local_ai_${response.status}`);
+        const response = await fetchLocalGeneration(
+          '/sermon',
+          { concern: text, topicId: result.topic.id },
+          controller.signal,
+          () => { reachedServer = true; setLocalAiStatus('connected'); },
+        );
+        if (!response.ok) throw generationError('local_ai', response);
         const payload: unknown = response.data;
         if (!isLocalAiPayload(payload) || payload.topicId !== result.topic.id
           || !passageSectionsCover(payload.sermon.passageSections, result.topic.start, result.topic.end)

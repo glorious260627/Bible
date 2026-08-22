@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -59,6 +59,10 @@ const topicPassages = {
 
 let running = false;
 const activeChildren = new Set();
+const generationJobs = new Map();
+const jobIdByKey = new Map();
+const cancelledJobIds = new Map();
+const JOB_TTL_MS = 30 * 60_000;
 
 function httpError(status, code) {
   const error = new Error(code);
@@ -118,6 +122,18 @@ function readBody(request) {
       reject(error);
     });
   });
+}
+
+async function readJsonPayload(request) {
+  let payload;
+  try {
+    payload = JSON.parse(await readBody(request));
+  } catch (error) {
+    if (error instanceof SyntaxError) throw httpError(400, 'invalid_json');
+    throw error;
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw httpError(400, 'invalid_payload');
+  return payload;
 }
 
 function waitForExit(child, timeoutMs = 4_000) {
@@ -335,6 +351,106 @@ ${adjacentText}
 </adjacent_context>`;
 }
 
+function resolveGenerationRequest(route, payload) {
+  if (route === '/sermon') {
+    const concern = typeof payload.concern === 'string' ? payload.concern.trim() : '';
+    const topicId = typeof payload.topicId === 'string' ? payload.topicId : '';
+    if (!concern || concern.length > 800) throw httpError(400, 'invalid_concern');
+    if (!allowedTopicIds.has(topicId)) throw httpError(400, 'invalid_topic');
+    const key = createHash('sha256').update(JSON.stringify({ route, concern, topicId })).digest('hex');
+    return {
+      key,
+      prompt: promptFor(concern, topicId),
+      selectedPassage: topicPassages[topicId],
+    };
+  }
+
+  const passage = {
+    book: typeof payload.book === 'string' ? payload.book : '',
+    chapter: Number(payload.chapter),
+    start: Number(payload.start),
+    end: Number(payload.end),
+  };
+  const verseLimit = Number.isInteger(passage.chapter) ? bibleLimits[passage.book]?.[passage.chapter - 1] : undefined;
+  if (!Number.isInteger(verseLimit)
+    || !Number.isInteger(passage.start) || passage.start < 1 || passage.start > verseLimit
+    || !Number.isInteger(passage.end) || passage.end < passage.start || passage.end > verseLimit) {
+    throw httpError(400, 'invalid_passage');
+  }
+  const key = createHash('sha256').update(JSON.stringify({ route, ...passage })).digest('hex');
+  return {
+    key,
+    prompt: promptForPassage(passage),
+    selectedPassage: passage,
+  };
+}
+
+function pruneGenerationJobs() {
+  const now = Date.now();
+  for (const [jobId, job] of generationJobs) {
+    if (now - job.updatedAt > JOB_TTL_MS) {
+      if (job.status === 'pending') job.controller.abort();
+      generationJobs.delete(jobId);
+      if (jobIdByKey.get(job.key) === jobId) jobIdByKey.delete(job.key);
+    }
+  }
+  for (const [jobId, cancelledAt] of cancelledJobIds) {
+    if (now - cancelledAt > JOB_TTL_MS) cancelledJobIds.delete(jobId);
+  }
+}
+
+const jobCleanupTimer = setInterval(pruneGenerationJobs, 5 * 60_000);
+jobCleanupTimer.unref();
+
+function reusableGenerationJob(key) {
+  const jobId = jobIdByKey.get(key);
+  const job = jobId ? generationJobs.get(jobId) : undefined;
+  if (!job || (job.status !== 'pending' && job.status !== 'succeeded')) return null;
+  return job;
+}
+
+function startGenerationJob(generation, requestedJobId) {
+  const controller = new AbortController();
+  const job = {
+    id: requestedJobId || randomBytes(18).toString('base64url'),
+    key: generation.key,
+    status: 'pending',
+    result: null,
+    error: null,
+    controller,
+    updatedAt: Date.now(),
+  };
+  generationJobs.set(job.id, job);
+  jobIdByKey.set(job.key, job.id);
+  running = true;
+
+  void runCodex(generation.prompt, controller.signal).then((result) => {
+    if (!sectionsCoverPassage(result, generation.selectedPassage)) throw new Error('invalid_passage_sections');
+    if (controller.signal.aborted) throw new Error('codex_aborted');
+    job.status = 'succeeded';
+    job.result = result;
+    job.updatedAt = Date.now();
+  }).catch((error) => {
+    job.status = controller.signal.aborted ? 'cancelled' : 'failed';
+    job.error = error instanceof Error ? error.message : 'codex_generation_failed';
+    job.updatedAt = Date.now();
+    if (jobIdByKey.get(job.key) === job.id) jobIdByKey.delete(job.key);
+    if (job.status === 'failed') console.error('[local-ai]', job.error);
+  }).finally(() => {
+    running = false;
+  });
+
+  return job;
+}
+
+function publicGenerationError(error) {
+  const message = typeof error === 'string' ? error : '';
+  if (message.includes('codex_timeout')) return 'codex_timeout';
+  if (message.includes('invalid_passage_sections') || message.includes('invalid_codex_output')) return 'invalid_generation_output';
+  if (message.includes('codex_aborted')) return 'generation_cancelled';
+  return 'codex_generation_failed';
+}
+
 async function runCodex(prompt, signal) {
   const workDir = await mkdtemp(join(tmpdir(), 'bible-local-ai-'));
   const outputPath = join(workDir, 'sermon.json');
@@ -442,7 +558,7 @@ const server = createServer(async (request, response) => {
   if (request.method === 'OPTIONS') {
     response.writeHead(204, {
       'Access-Control-Allow-Origin': origin || 'http://localhost:3000',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, X-Bible-Local-Token',
       'Access-Control-Max-Age': '600',
       Vary: 'Origin',
@@ -460,8 +576,14 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  const jobStatusMatch = request.method === 'GET' || request.method === 'DELETE'
+    ? request.url?.match(/^\/jobs\/([A-Za-z0-9_-]{24})$/)
+    : null;
+  const startRoute = request.method === 'POST' && (request.url === '/sermon/start' || request.url === '/passage/start')
+    ? request.url.replace('/start', '')
+    : null;
   const generationRoute = request.method === 'POST' && (request.url === '/sermon' || request.url === '/passage');
-  if (!generationRoute) {
+  if (!jobStatusMatch && !startRoute && !generationRoute) {
     sendJson(response, 404, { error: 'not_found' }, origin);
     return;
   }
@@ -469,6 +591,62 @@ const server = createServer(async (request, response) => {
     sendJson(response, 401, { error: 'unauthorized' }, origin);
     return;
   }
+
+  pruneGenerationJobs();
+  if (jobStatusMatch) {
+    const job = generationJobs.get(jobStatusMatch[1]);
+    if (request.method === 'DELETE') {
+      cancelledJobIds.set(jobStatusMatch[1], Date.now());
+      if (job?.status === 'pending') {
+        job.status = 'cancelled';
+        job.error = 'generation_cancelled';
+        job.updatedAt = Date.now();
+        if (jobIdByKey.get(job.key) === job.id) jobIdByKey.delete(job.key);
+        job.controller.abort();
+      }
+      sendJson(response, 200, { jobId: jobStatusMatch[1], status: 'cancelled' }, origin);
+    } else if (!job) sendJson(response, 404, { error: 'unknown_generation_job' }, origin);
+    else if (job.status === 'pending') sendJson(response, 202, { jobId: job.id, status: 'pending' }, origin);
+    else if (job.status === 'succeeded') sendJson(response, 200, job.result, origin);
+    else if (job.status === 'cancelled') sendJson(response, 409, { error: 'generation_cancelled' }, origin);
+    else sendJson(response, 500, { error: publicGenerationError(job.error) }, origin);
+    return;
+  }
+
+  if (startRoute) {
+    try {
+      const payload = await readJsonPayload(request);
+      const requestedJobId = typeof payload.jobId === 'string' ? payload.jobId : '';
+      if (!/^[A-Za-z0-9_-]{24}$/.test(requestedJobId)) throw httpError(400, 'invalid_generation_job');
+      if (cancelledJobIds.has(requestedJobId)) {
+        sendJson(response, 409, { error: 'generation_cancelled' }, origin);
+        return;
+      }
+      const generation = resolveGenerationRequest(startRoute, payload);
+      const existing = reusableGenerationJob(generation.key);
+      if (existing) {
+        sendJson(response, 202, { jobId: existing.id, status: existing.status }, origin);
+        return;
+      }
+      const conflictingJob = generationJobs.get(requestedJobId);
+      if (conflictingJob) {
+        sendJson(response, 409, { error: 'generation_job_conflict' }, origin);
+        return;
+      }
+      if (running || activeChildren.size > 0) {
+        sendJson(response, 429, { error: 'busy' }, origin);
+        return;
+      }
+      const job = startGenerationJob(generation, requestedJobId);
+      sendJson(response, 202, { jobId: job.id, status: job.status }, origin);
+    } catch (error) {
+      const status = Number.isInteger(error?.status) ? error.status : 500;
+      if (status >= 500) console.error('[local-ai]', error instanceof Error ? error.message : error);
+      sendJson(response, status, { error: status === 500 ? 'codex_generation_failed' : error.message }, origin);
+    }
+    return;
+  }
+
   if (running || activeChildren.size > 0) {
     sendJson(response, 429, { error: 'busy' }, origin);
     return;
@@ -483,43 +661,9 @@ const server = createServer(async (request, response) => {
   response.once('close', cancelDisconnectedRequest);
 
   try {
-    let payload;
-    try {
-      payload = JSON.parse(await readBody(request));
-    } catch (error) {
-      if (error instanceof SyntaxError) throw httpError(400, 'invalid_json');
-      throw error;
-    }
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw httpError(400, 'invalid_payload');
-
-    let prompt;
-    let selectedPassage;
-    if (request.url === '/sermon') {
-      const concern = typeof payload.concern === 'string' ? payload.concern.trim() : '';
-      const topicId = typeof payload.topicId === 'string' ? payload.topicId : '';
-      if (!concern || concern.length > 800) throw httpError(400, 'invalid_concern');
-      if (!allowedTopicIds.has(topicId)) throw httpError(400, 'invalid_topic');
-      selectedPassage = topicPassages[topicId];
-      prompt = promptFor(concern, topicId);
-    } else {
-      const passage = {
-        book: typeof payload.book === 'string' ? payload.book : '',
-        chapter: Number(payload.chapter),
-        start: Number(payload.start),
-        end: Number(payload.end),
-      };
-      const verseLimit = Number.isInteger(passage.chapter) ? bibleLimits[passage.book]?.[passage.chapter - 1] : undefined;
-      if (!Number.isInteger(verseLimit)
-        || !Number.isInteger(passage.start) || passage.start < 1 || passage.start > verseLimit
-        || !Number.isInteger(passage.end) || passage.end < passage.start || passage.end > verseLimit) {
-        throw httpError(400, 'invalid_passage');
-      }
-      selectedPassage = passage;
-      prompt = promptForPassage(passage);
-    }
-
-    const result = await runCodex(prompt, requestController.signal);
-    if (!sectionsCoverPassage(result, selectedPassage)) throw new Error('invalid_passage_sections');
+    const generation = resolveGenerationRequest(request.url, await readJsonPayload(request));
+    const result = await runCodex(generation.prompt, requestController.signal);
+    if (!sectionsCoverPassage(result, generation.selectedPassage)) throw new Error('invalid_passage_sections');
     if (!response.destroyed && !response.writableEnded) sendJson(response, 200, result, origin);
   } catch (error) {
     if (!requestController.signal.aborted && !response.destroyed && !response.writableEnded) {
@@ -545,6 +689,10 @@ if (!AUTH_TOKEN) {
 }
 
 async function shutdown() {
+  clearInterval(jobCleanupTimer);
+  for (const job of generationJobs.values()) {
+    if (job.status === 'pending') job.controller.abort();
+  }
   server.close();
   await Promise.allSettled([...activeChildren].map(terminateTree));
   process.exit(0);
