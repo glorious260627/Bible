@@ -2,6 +2,8 @@
 
 성경 구절을 고르면 뜻을 쉬운 한국어로 풀고, 2026년 한국의 일상에 연결해 묵상하도록 돕는 설교형 말씀 길잡이입니다.
 
+웹에서 사용하기: [oneul-malsseum.glorious260627.chatgpt.site](https://oneul-malsseum.glorious260627.chatgpt.site)
+
 ## 주요 기능
 
 - 창세기부터 요한계시록까지 66권 선택
