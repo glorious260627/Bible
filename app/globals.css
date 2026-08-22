@@ -592,6 +592,10 @@ summary:focus-visible { outline: 3px solid rgb(189 116 79 / 35%); outline-offset
 .manuscript-movements article > header small { grid-column: 3; color: #9aa49e; font-size: 9px; }
 .manuscript-movements h3 { grid-column: 1 / -1; margin: 4px 0 8px; color: #183c2e; font-family: Georgia, 'Noto Serif KR', serif; font-size: 25px; line-height: 1.45; }
 .manuscript-movements p { margin: 16px 0 0; }
+.manuscript-scripture { margin: 22px 0 27px; padding: 20px 21px; border: 0; border-left: 3px solid #b78369; background: #faf5ed; }
+.manuscript-scripture > strong { display: block; margin-bottom: 13px; color: #84523b; font-family: Arial, sans-serif; font-size: 10px; letter-spacing: .06em; }
+.manuscript-scripture p { margin: 8px 0 0; display: grid; grid-template-columns: 25px 1fr; gap: 9px; color: #3d443f; font-size: calc(15px * var(--reading-scale, 1)); line-height: 1.9; }
+.manuscript-scripture sup { padding-top: .55em; color: #a76547; font-family: Arial, sans-serif; font-size: 9px; font-weight: 800; line-height: 1; text-align: right; }
 .manuscript-movements .manuscript-bridge { margin-top: 22px; padding-left: 17px; border-left: 2px solid #d7b29d; color: #795c4d; font-size: calc(15px * var(--reading-scale, 1)); font-style: italic; }
 .manuscript-gospel,
 .manuscript-conclusion { margin-top: 34px; padding-top: 32px; border-top: 1px solid #dfe4dc; }
@@ -628,6 +632,8 @@ summary:focus-visible { outline: 3px solid rgb(189 116 79 / 35%); outline-offset
   .manuscript-context { padding: 18px; }
   .manuscript-movements article { padding: 36px 0 29px; }
   .manuscript-movements h3 { font-size: calc(21px * var(--reading-scale, 1)); }
+  .manuscript-scripture { margin: 19px 0 24px; padding: 17px 14px; }
+  .manuscript-scripture p { grid-template-columns: 22px 1fr; font-size: calc(15px * var(--reading-scale, 1)); line-height: 1.95; }
   .manuscript-movements .manuscript-bridge { font-size: calc(14px * var(--reading-scale, 1)); }
   .manuscript-prayer { padding: 23px 20px; }
   .sermon-study-details > summary { min-height: 48px; display: flex; align-items: center; }

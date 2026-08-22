@@ -55,9 +55,18 @@ type TtsStatus = 'idle' | 'loading' | 'playing' | 'paused';
 type TtsTarget = 'scripture' | 'sermon';
 type MobileTab = 'bible' | 'sermon' | 'heart' | 'question';
 
-async function getNativeTextToSpeech() {
-  const { TextToSpeech } = await import('@capacitor-community/text-to-speech');
-  return TextToSpeech;
+function getNativeTextToSpeech() {
+  return import('@capacitor-community/text-to-speech');
+}
+
+async function prepareNativeKoreanVoice() {
+  const { TextToSpeech } = await getNativeTextToSpeech();
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const { supported } = await TextToSpeech.isLanguageSupported({ lang: 'ko-KR' }).catch(() => ({ supported: false }));
+    if (supported) return { TextToSpeech, supported: true as const };
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
+  }
+  return { TextToSpeech, supported: false as const };
 }
 type PassageStatus = 'loading' | 'ready' | 'error';
 type PassageVerse = { number: number; text: string };
@@ -916,7 +925,7 @@ function scriptureSpeechChunks(ref: string, verses: PassageVerse[]) {
     .flatMap((section) => splitForSpeech(section));
 }
 
-function speechChunks(ref: string, sermon: Sermon, urgent: CareResult['urgent']) {
+function speechChunks(ref: string, sermon: Sermon, verses: PassageVerse[], urgent: CareResult['urgent']) {
   const spokenRef = ref.replace(/(\d+)–(\d+)절/, '$1절에서 $2절');
   const safety = urgent === 'self_harm'
     ? ['긴급 안전 안내. 이미 다쳤거나 약을 복용했거나 실행 직전이라면 구급 119, 경찰 112 또는 가까운 응급실에 먼저 연락하세요. 혼자 있지 말고 위험한 물건이나 장소에서 떨어진 뒤, 24시간 자살예방 상담전화 109에도 도움을 요청해 주세요. 말씀 추천은 긴급한 도움을 대신하지 않습니다.']
@@ -931,7 +940,9 @@ function speechChunks(ref: string, sermon: Sermon, urgent: CareResult['urgent'])
             : [];
   if (safety.length) return safety.flatMap((item) => splitForSpeech(item));
   const sections = [
-    `${spokenRef}. 오늘의 설교 제목은 ${sermon.title}입니다.`,
+    `먼저 오늘의 본문, ${spokenRef} 말씀을 함께 읽겠습니다.`,
+    ...verses.map((verse) => `${verse.number}절. ${verse.text}`),
+    `아멘. 방금 읽은 ${spokenRef} 말씀을 따라 설교를 시작하겠습니다. 오늘의 설교 제목은 ${sermon.title}입니다.`,
     ...sermon.manuscript.introduction,
     sermon.context,
     ...sermon.manuscript.sections.flatMap((section) => [...section.paragraphs, section.bridgeToNext]),
@@ -1001,6 +1012,7 @@ export default function Home() {
   const koreanVoice = useRef<SpeechSynthesisVoice | null>(null);
   const nativeTtsProgress = useRef({ queue: [] as string[], index: 0, offset: 0, baseOffset: 0 });
   const nativeRangeActive = useRef(false);
+  const nativeTtsWarmup = useRef<ReturnType<typeof prepareNativeKoreanVoice> | null>(null);
   const localAiAbort = useRef<AbortController | null>(null);
   const urgentCareRef = useRef<HTMLDivElement | null>(null);
   const bibleCache = useRef<Map<string, string[][]>>(new Map());
@@ -1180,7 +1192,7 @@ export default function Home() {
       ttsRun.current += 1;
       nativeRangeActive.current = false;
       if (Capacitor.isNativePlatform()) {
-        void getNativeTextToSpeech().then((plugin) => plugin.stop()).catch(() => undefined);
+        void getNativeTextToSpeech().then(({ TextToSpeech }) => TextToSpeech.stop()).catch(() => undefined);
       }
       window.speechSynthesis?.cancel();
       window.speechSynthesis?.resume();
@@ -1189,9 +1201,10 @@ export default function Home() {
 
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
+    nativeTtsWarmup.current ??= prepareNativeKoreanVoice();
     let disposed = false;
     let listener: { remove: () => Promise<void> } | undefined;
-    void getNativeTextToSpeech().then((plugin) => plugin.addListener('onRangeStart', ({ start }) => {
+    void getNativeTextToSpeech().then(({ TextToSpeech }) => TextToSpeech.addListener('onRangeStart', ({ start }) => {
         if (nativeRangeActive.current) {
           nativeTtsProgress.current.offset = nativeTtsProgress.current.baseOffset + start;
         }
@@ -1249,7 +1262,7 @@ export default function Home() {
     nativeRangeActive.current = false;
     nativeTtsProgress.current = { queue: [], index: 0, offset: 0, baseOffset: 0 };
     if (Capacitor.isNativePlatform()) {
-      void getNativeTextToSpeech().then((plugin) => plugin.stop()).catch(() => undefined);
+      void getNativeTextToSpeech().then(({ TextToSpeech }) => TextToSpeech.stop()).catch(() => undefined);
     }
     window.speechSynthesis?.cancel();
     window.speechSynthesis?.resume();
@@ -1263,7 +1276,7 @@ export default function Home() {
     }
     const queue = target === 'scripture'
       ? scriptureSpeechChunks(ref, passageVerses)
-      : speechChunks(ref, sermon, careResult?.urgent ?? null);
+      : speechChunks(ref, sermon, passageVerses, careResult?.urgent ?? null);
 
     const startWebSpeech = () => {
       nativeRangeActive.current = false;
@@ -1331,9 +1344,22 @@ export default function Home() {
       setTtsTarget(target);
       setTtsStatus('loading');
 
-      void getNativeTextToSpeech().then(async (TextToSpeech) => {
-        await TextToSpeech.stop().catch(() => undefined);
+      const warmup = nativeTtsWarmup.current ?? prepareNativeKoreanVoice();
+      nativeTtsWarmup.current = warmup;
+      void warmup.then(async ({ TextToSpeech, supported }) => {
         if (runId !== ttsRun.current) return;
+        if (!supported) {
+          nativeRangeActive.current = false;
+          setTtsStatus('idle');
+          showNotice('한국어 음성이 설치되어 있지 않아 설치 화면을 열어요.', 4000);
+          await TextToSpeech.openInstall();
+          nativeTtsWarmup.current = null;
+          return;
+        }
+        if (ttsStatus !== 'idle') {
+          await TextToSpeech.stop().catch(() => undefined);
+          if (runId !== ttsRun.current) return;
+        }
         if (!continuing) {
           nativeTtsProgress.current = { queue, index: 0, offset: 0, baseOffset: 0 };
         }
@@ -1370,14 +1396,6 @@ export default function Home() {
           });
         };
 
-        const { supported } = await TextToSpeech.isLanguageSupported({ lang: 'ko-KR' });
-        if (!supported) {
-          nativeRangeActive.current = false;
-          setTtsStatus('idle');
-          showNotice('한국어 음성이 설치되어 있지 않아 설치 화면을 열어요.', 4000);
-          await TextToSpeech.openInstall();
-          return;
-        }
         speakNativeAt(progress.index, progress.offset);
       }).catch(() => {
         if (runId !== ttsRun.current) return;
@@ -1395,7 +1413,7 @@ export default function Home() {
     if (Capacitor.isNativePlatform()) {
       ttsRun.current += 1;
       nativeRangeActive.current = false;
-      void getNativeTextToSpeech().then((plugin) => plugin.stop()).catch(() => undefined);
+      void getNativeTextToSpeech().then(({ TextToSpeech }) => TextToSpeech.stop()).catch(() => undefined);
       setTtsStatus('paused');
       return;
     }
@@ -1893,6 +1911,14 @@ export default function Home() {
                 {sermon.manuscript.sections.map((section, index) => (
                   <article key={`${section.start}-${section.end}`}>
                     <header><span>{verseSpan(section.start, section.end)}</span><small>{index + 1} / {sermon.manuscript.sections.length}</small><h3>{section.heading}</h3></header>
+                    {passageStatus === 'ready' && (
+                      <blockquote className="manuscript-scripture">
+                        <strong>{verseSpan(section.start, section.end)} 실제 본문</strong>
+                        {passageVerses.filter((verse) => verse.number >= section.start && verse.number <= section.end).map((verse) => (
+                          <p key={`${section.start}-verse-${verse.number}`}><sup>{verse.number}</sup><span>{verse.text}</span></p>
+                        ))}
+                      </blockquote>
+                    )}
                     {section.paragraphs.map((paragraph, paragraphIndex) => <p key={`${section.start}-p-${paragraphIndex}`}>{paragraph}</p>)}
                     <p className="manuscript-bridge">{section.bridgeToNext}</p>
                   </article>
