@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 const siteUrl = 'https://oneul-malsseum.glorious260627.chatgpt.site';
@@ -24,6 +24,13 @@ export const metadata: Metadata = {
     description,
     images: [`${siteUrl}/og.png`],
   },
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+  themeColor: '#f6f3e9',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

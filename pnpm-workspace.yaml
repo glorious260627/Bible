@@ -3,3 +3,5 @@ allowBuilds:
   sharp: true
   unrs-resolver: true
   workerd: true
+patchedDependencies:
+  '@capacitor-community/text-to-speech@8.0.2': patches/@capacitor-community__text-to-speech@8.0.2.patch

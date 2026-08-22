@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "topicId": {
+      "type": "string",
+      "enum": ["passage", "anxiety", "discouragement", "loneliness", "relationship", "forgiveness", "work", "finances", "direction", "guilt", "grief", "pain", "anger", "burnout", "general-care"]
+    },
+    "urgent": {
+      "type": "string",
+      "enum": ["none", "self_harm", "violence", "both", "harm_to_others", "complex_danger"]
+    },
+    "sermon": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "opening": { "type": "string" },
+        "context": { "type": "string" },
+        "passageSections": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "properties": {
+              "start": { "type": "integer", "minimum": 1 },
+              "end": { "type": "integer", "minimum": 1 },
+              "title": { "type": "string" },
+              "explanation": { "type": "string" }
+            },
+            "required": ["start", "end", "title", "explanation"],
+            "additionalProperties": false
+          }
+        },
+        "points": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "body": { "type": "string" }
+            },
+            "required": ["title", "body"],
+            "additionalProperties": false
+          }
+        },
+        "illustration": { "type": "string" },
+        "crossReferences": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "properties": {
+              "reference": { "type": "string" },
+              "connection": { "type": "string" }
+            },
+            "required": ["reference", "connection"],
+            "additionalProperties": false
+          }
+        },
+        "applications": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "string" }
+        },
+        "caution": { "type": "string" },
+        "questions": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "string" }
+        },
+        "decision": { "type": "string" },
+        "prayer": { "type": "string" }
+      },
+      "required": ["title", "summary", "opening", "context", "passageSections", "points", "illustration", "crossReferences", "applications", "caution", "questions", "decision", "prayer"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["topicId", "urgent", "sermon"],
+  "additionalProperties": false
+}

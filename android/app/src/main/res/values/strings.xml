@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">오늘의 말씀</string>
+    <string name="title_activity_main">오늘의 말씀</string>
+    <string name="package_name">site.chatgpt.glorious260627.bible</string>
+    <string name="custom_url_scheme">site.chatgpt.glorious260627.bible</string>
+</resources>

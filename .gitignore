@@ -35,4 +35,8 @@ next-env.d.ts
 /dist/
 /.wrangler/
 /outputs/
+/artifacts/*.apk
 /work/
+*.tsbuildinfo
+/inst_user_settings.tmp
+/tmp/

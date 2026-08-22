@@ -7,16 +7,29 @@
   },
   "scripts": {
     "dev": "vinext dev",
+    "local": "node scripts/local-dev.mjs",
+    "local:ai": "node scripts/local-ai-server.mjs",
+    "verify:bible": "node scripts/verify-bible-corpus.mjs",
+    "prebuild": "pnpm run verify:bible",
     "build": "vinext build",
+    "build:android:web": "pnpm run verify:bible && cross-env CAPACITOR_BUILD=1 next build",
+    "android:init": "cap add android",
+    "android:sync": "pnpm run build:android:web && cap sync android",
+    "android:open": "cap open android",
+    "android:apk": "node scripts/build-android-apk.mjs",
     "start": "vinext start",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern out --ignore-pattern android/app/src/main/assets/public --ignore-pattern android/.gradle --ignore-pattern android/app/build"
   },
   "dependencies": {
+    "@capacitor-community/text-to-speech": "8.0.2",
+    "@capacitor/android": "8.5.0",
+    "@capacitor/core": "8.5.0",
     "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
   "devDependencies": {
+    "@capacitor/cli": "8.5.0",
     "@cloudflare/vite-plugin": "1.37.1",
     "@cloudflare/workers-types": "4.20260515.1",
     "@openai/sites-vite-plugin": "^0.1.0 || ^0.2.0",
@@ -26,6 +39,7 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
+    "cross-env": "10.1.0",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
     "react-server-dom-webpack": "19.2.6",

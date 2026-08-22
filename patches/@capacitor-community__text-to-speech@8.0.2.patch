@@ -1,0 +1,11 @@
+diff --git a/android/src/main/java/com/getcapacitor/community/tts/TextToSpeech.java b/android/src/main/java/com/getcapacitor/community/tts/TextToSpeech.java
+index 3ad76834dca58c126baa8f5edf3ab062c73ad11b..4956445473e049c16dcde8b2a3ee5014994e6a80 100644
+--- a/android/src/main/java/com/getcapacitor/community/tts/TextToSpeech.java
++++ b/android/src/main/java/com/getcapacitor/community/tts/TextToSpeech.java
+@@ -126,3 +126,6 @@ public class TextToSpeech implements android.speech.tts.TextToSpeech.OnInitListe
+     public void stop() {
+         tts.stop();
++        for (SpeakResultCallback callback : new ArrayList<>(requests.values())) {
++            callback.onError();
++        }
+         requests.clear();
