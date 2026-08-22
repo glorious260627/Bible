@@ -925,7 +925,7 @@ function scriptureSpeechChunks(ref: string, verses: PassageVerse[]) {
     .flatMap((section) => splitForSpeech(section));
 }
 
-function speechChunks(ref: string, sermon: Sermon, verses: PassageVerse[], urgent: CareResult['urgent']) {
+function speechChunks(ref: string, sermon: Sermon, urgent: CareResult['urgent']) {
   const spokenRef = ref.replace(/(\d+)–(\d+)절/, '$1절에서 $2절');
   const safety = urgent === 'self_harm'
     ? ['긴급 안전 안내. 이미 다쳤거나 약을 복용했거나 실행 직전이라면 구급 119, 경찰 112 또는 가까운 응급실에 먼저 연락하세요. 혼자 있지 말고 위험한 물건이나 장소에서 떨어진 뒤, 24시간 자살예방 상담전화 109에도 도움을 요청해 주세요. 말씀 추천은 긴급한 도움을 대신하지 않습니다.']
@@ -940,9 +940,7 @@ function speechChunks(ref: string, sermon: Sermon, verses: PassageVerse[], urgen
             : [];
   if (safety.length) return safety.flatMap((item) => splitForSpeech(item));
   const sections = [
-    `먼저 오늘의 본문, ${spokenRef} 말씀을 함께 읽겠습니다.`,
-    ...verses.map((verse) => `${verse.number}절. ${verse.text}`),
-    `아멘. 방금 읽은 ${spokenRef} 말씀을 따라 설교를 시작하겠습니다. 오늘의 설교 제목은 ${sermon.title}입니다.`,
+    `${spokenRef}. 오늘의 설교 제목은 ${sermon.title}입니다.`,
     ...sermon.manuscript.introduction,
     sermon.context,
     ...sermon.manuscript.sections.flatMap((section) => [...section.paragraphs, section.bridgeToNext]),
@@ -1276,7 +1274,7 @@ export default function Home() {
     }
     const queue = target === 'scripture'
       ? scriptureSpeechChunks(ref, passageVerses)
-      : speechChunks(ref, sermon, passageVerses, careResult?.urgent ?? null);
+      : speechChunks(ref, sermon, careResult?.urgent ?? null);
 
     const startWebSpeech = () => {
       nativeRangeActive.current = false;
