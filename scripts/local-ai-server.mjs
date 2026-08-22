@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const HOST = process.env.BIBLE_LOCAL_AI_HOST || '127.0.0.1';
 const PORT = Number(process.env.BIBLE_LOCAL_AI_PORT || 4317);
 const AUTH_TOKEN = process.env.BIBLE_LOCAL_TOKEN || '';
-const GENERATION_TIMEOUT_MS = Number(process.env.BIBLE_CODEX_TIMEOUT_MS || 180_000);
+const GENERATION_TIMEOUT_MS = Number(process.env.BIBLE_CODEX_TIMEOUT_MS || 240_000);
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const schemaPath = join(scriptDir, 'local-sermon-schema.json');
 const bibleLimits = JSON.parse(readFileSync(join(scriptDir, 'bible-limits.json'), 'utf8'));

@@ -1609,7 +1609,7 @@ export default function Home() {
     if (localPersonalMode) {
       const controller = new AbortController();
       localAiAbort.current = controller;
-      const timeout = schedule(() => controller.abort(), 195_000);
+      const timeout = schedule(() => controller.abort(), 255_000);
       let reachedServer = false;
       try {
         const response = await fetchLocalGeneration(
@@ -1768,7 +1768,7 @@ export default function Home() {
     if (localPersonalMode) {
       const controller = new AbortController();
       localAiAbort.current = controller;
-      const timeout = schedule(() => controller.abort(), 195_000);
+      const timeout = schedule(() => controller.abort(), 255_000);
       let reachedServer = false;
       try {
         const response = await fetchLocalGeneration(
