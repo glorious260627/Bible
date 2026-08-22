@@ -554,3 +554,83 @@ summary:focus-visible { outline: 3px solid rgb(189 116 79 / 35%); outline-offset
   }
   .toast { bottom: calc(78px + env(safe-area-inset-bottom)); }
 }
+
+/* A continuous, spoken-sermon surface sits above the optional study cards. */
+.ai-link-button {
+  min-height: 38px; padding: 0 13px; display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid #ccd8cf; border-radius: 999px; background: #f6f8f3; color: #6e7d75;
+  font-size: 10px; font-weight: 800; cursor: pointer;
+}
+.ai-link-button.connected { border-color: #aec4b3; background: #eaf2e9; color: var(--forest); }
+.ai-link-button span { font-size: 8px; }
+.whole-chapter-button {
+  width: 100%; margin: 15px 0 20px; padding: 16px 17px; display: flex; justify-content: space-between; align-items: center;
+  border: 1px solid #c8d7ca; border-radius: 10px; background: #f4f8f2; color: var(--forest); cursor: pointer;
+}
+.whole-chapter-button span { font-size: 11px; font-weight: 700; }
+.whole-chapter-button strong { font-family: Georgia, 'Noto Serif KR', serif; font-size: 16px; }
+.whole-chapter-button.active { border-color: var(--forest); box-shadow: 0 0 0 2px rgb(31 75 59 / 10%); }
+
+.sermon-manuscript {
+  margin-top: 42px; padding: 46px clamp(24px, 5vw, 64px);
+  border: 1px solid #d8dfd7; border-radius: 4px; background: #fffefa;
+  box-shadow: 0 24px 70px rgb(26 53 42 / 7%);
+}
+.sermon-manuscript > header { padding-bottom: 27px; display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; border-bottom: 1px solid #dfe4dc; }
+.sermon-manuscript > header h2 { max-width: 720px; margin: 0; color: var(--forest-deep); font-family: Georgia, 'Noto Serif KR', serif; font-size: 32px; line-height: 1.35; letter-spacing: -.035em; }
+.sermon-manuscript > header .voice-button { flex: 0 0 auto; min-height: 45px; }
+.manuscript-introduction { padding-top: 29px; }
+.sermon-manuscript p,
+.manuscript-prayer { color: #303d37; font-family: Georgia, 'Noto Serif KR', serif; font-size: calc(17px * var(--reading-scale, 1)); line-height: 2.05; word-break: keep-all; }
+.manuscript-introduction p:first-child::first-letter { float: left; margin: .04em .1em 0 0; color: var(--warm); font-size: 3.05em; font-weight: 700; line-height: .85; }
+.manuscript-context { margin: 30px 0 34px; padding: 21px 23px; border-left: 3px solid #9db5a3; background: #f3f6f0; }
+.manuscript-context strong { display: block; margin-bottom: 7px; color: var(--forest); font-size: 11px; letter-spacing: .08em; }
+.manuscript-context p { margin: 0; font-family: inherit; font-size: 14px; line-height: 1.9; }
+.manuscript-movements article { padding: 44px 0 35px; border-top: 1px solid #e1e5df; }
+.manuscript-movements article > header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px 13px; }
+.manuscript-movements article > header span { padding: 5px 9px; border-radius: 999px; background: #eaf1e8; color: var(--forest); font-size: 10px; font-weight: 800; }
+.manuscript-movements article > header small { grid-column: 3; color: #9aa49e; font-size: 9px; }
+.manuscript-movements h3 { grid-column: 1 / -1; margin: 4px 0 8px; color: #183c2e; font-family: Georgia, 'Noto Serif KR', serif; font-size: 25px; line-height: 1.45; }
+.manuscript-movements p { margin: 16px 0 0; }
+.manuscript-movements .manuscript-bridge { margin-top: 22px; padding-left: 17px; border-left: 2px solid #d7b29d; color: #795c4d; font-size: calc(15px * var(--reading-scale, 1)); font-style: italic; }
+.manuscript-gospel,
+.manuscript-conclusion { margin-top: 34px; padding-top: 32px; border-top: 1px solid #dfe4dc; }
+.manuscript-gospel > .eyebrow,
+.manuscript-conclusion > .eyebrow { margin-bottom: 18px; color: var(--warm); font-family: inherit; font-size: 10px; line-height: 1; }
+.manuscript-prayer { margin: 42px 0 0; padding: 28px 30px; border: 0; border-radius: 2px; background: #eaf1e8; color: #244739; }
+.manuscript-prayer span { margin-bottom: 10px; display: block; font-family: Arial, sans-serif; font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.sermon-study-details { margin-top: 28px; border-top: 1px solid #d8e0d9; }
+.sermon-study-details > summary { padding: 20px 2px; color: var(--forest); font-size: 12px; font-weight: 800; cursor: pointer; }
+.sermon-study-details-body { padding-bottom: 12px; }
+
+.ai-connection-dialog {
+  width: min(520px, calc(100vw - 32px)); padding: 26px; border-radius: 14px; background: #fbfcf8;
+  box-shadow: 0 30px 90px rgb(9 25 19 / 30%);
+}
+.ai-connection-dialog > header { display: flex; justify-content: space-between; gap: 20px; }
+.ai-connection-dialog h2 { margin: 0; color: var(--forest-deep); font-family: Georgia, 'Noto Serif KR', serif; font-size: 24px; }
+.ai-connection-dialog > header > button { width: 34px; height: 34px; border: 0; border-radius: 50%; background: #e9eee7; color: #66746d; font-size: 22px; cursor: pointer; }
+.ai-connection-dialog > p { color: #53615a; font-size: 12px; line-height: 1.8; }
+.ai-connection-dialog label { margin-top: 15px; display: grid; gap: 7px; color: #43524b; font-size: 11px; font-weight: 800; }
+.ai-connection-dialog input { min-height: 45px; padding: 0 12px; border: 1px solid #cad5cc; border-radius: 8px; background: white; font-size: 15px; }
+.ai-connection-dialog > small { margin-top: 14px; display: block; color: #87928c; font-size: 9px; line-height: 1.7; }
+.ai-connection-dialog > footer { margin-top: 22px; display: flex; justify-content: flex-end; gap: 8px; }
+
+@media (max-width: 780px) {
+  .top-actions .ai-link-button { width: 40px; min-height: 40px; padding: 0; justify-content: center; font-size: 0; }
+  .top-actions .ai-link-button span { font-size: 10px; }
+  .sermon-manuscript { margin-top: 26px; padding: 29px 18px; border-radius: 12px; }
+  .sermon-manuscript > header { display: block; }
+  .sermon-manuscript > header h2 { font-size: calc(25px * var(--reading-scale, 1)); }
+  .sermon-manuscript > header .voice-button { width: 100%; margin-top: 18px; min-height: 48px; }
+  .sermon-manuscript p,
+  .manuscript-prayer { font-size: calc(17px * var(--reading-scale, 1)); line-height: 2.08; }
+  .manuscript-context { padding: 18px; }
+  .manuscript-movements article { padding: 36px 0 29px; }
+  .manuscript-movements h3 { font-size: calc(21px * var(--reading-scale, 1)); }
+  .manuscript-movements .manuscript-bridge { font-size: calc(14px * var(--reading-scale, 1)); }
+  .manuscript-prayer { padding: 23px 20px; }
+  .sermon-study-details > summary { min-height: 48px; display: flex; align-items: center; }
+  .ai-connection-dialog { padding: 22px 18px; border-radius: 16px 16px 0 0; }
+  .ai-connection-dialog > footer button { min-height: 46px; }
+}

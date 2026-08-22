@@ -76,9 +76,58 @@
           "items": { "type": "string" }
         },
         "decision": { "type": "string" },
-        "prayer": { "type": "string" }
+        "prayer": { "type": "string" },
+        "manuscript": {
+          "type": "object",
+          "properties": {
+            "estimatedMinutes": { "type": "integer", "minimum": 9, "maximum": 18 },
+            "introduction": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 5,
+              "items": { "type": "string", "minLength": 120 }
+            },
+            "sections": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 6,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "start": { "type": "integer", "minimum": 1 },
+                  "end": { "type": "integer", "minimum": 1 },
+                  "heading": { "type": "string" },
+                  "paragraphs": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 6,
+                    "items": { "type": "string", "minLength": 140 }
+                  },
+                  "bridgeToNext": { "type": "string", "minLength": 30 }
+                },
+                "required": ["start", "end", "heading", "paragraphs", "bridgeToNext"],
+                "additionalProperties": false
+              }
+            },
+            "gospelConnection": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "items": { "type": "string", "minLength": 120 }
+            },
+            "conclusion": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 4,
+              "items": { "type": "string", "minLength": 120 }
+            },
+            "closingPrayer": { "type": "string", "minLength": 180 }
+          },
+          "required": ["estimatedMinutes", "introduction", "sections", "gospelConnection", "conclusion", "closingPrayer"],
+          "additionalProperties": false
+        }
       },
-      "required": ["title", "summary", "opening", "context", "passageSections", "points", "illustration", "crossReferences", "applications", "caution", "questions", "decision", "prayer"],
+      "required": ["title", "summary", "opening", "context", "passageSections", "points", "illustration", "crossReferences", "applications", "caution", "questions", "decision", "prayer", "manuscript"],
       "additionalProperties": false
     }
   },

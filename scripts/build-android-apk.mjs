@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { loadPersonalAiConfig } from "./personal-ai-config.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectDirectory = path.resolve(scriptDirectory, "..");
@@ -307,12 +308,18 @@ async function copyApkArtifact() {
 }
 
 async function main() {
-  const [javaHome, androidHome, pnpmLauncher] = await Promise.all([
+  const [javaHome, androidHome, pnpmLauncher, personalAi] = await Promise.all([
     resolveJavaHome(),
     resolveAndroidHome(),
     resolvePnpmLauncher(),
+    loadPersonalAiConfig(),
   ]);
-  const buildEnvironment = createBuildEnvironment(javaHome, androidHome);
+  const buildEnvironment = {
+    ...createBuildEnvironment(javaHome, androidHome),
+    NEXT_PUBLIC_BIBLE_LOCAL_AI_BASE: personalAi.baseUrl,
+    NEXT_PUBLIC_BIBLE_LOCAL_AI_TOKEN: personalAi.token,
+  };
+  console.log(`[Android] 개인용 AI 연결: ${personalAi.baseUrl}`);
 
   await runCommand(
     "웹 정적 번들 생성 및 Capacitor 동기화",

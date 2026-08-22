@@ -9,6 +9,7 @@
     "dev": "vinext dev",
     "local": "node scripts/local-dev.mjs",
     "local:ai": "node scripts/local-ai-server.mjs",
+    "local:android-ai": "node scripts/android-ai-server.mjs",
     "verify:bible": "node scripts/verify-bible-corpus.mjs",
     "prebuild": "pnpm run verify:bible",
     "build": "vinext build",

@@ -7,9 +7,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const HOST = '127.0.0.1';
+const HOST = process.env.BIBLE_LOCAL_AI_HOST || '127.0.0.1';
 const PORT = Number(process.env.BIBLE_LOCAL_AI_PORT || 4317);
 const AUTH_TOKEN = process.env.BIBLE_LOCAL_TOKEN || '';
+const GENERATION_TIMEOUT_MS = Number(process.env.BIBLE_CODEX_TIMEOUT_MS || 180_000);
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const schemaPath = join(scriptDir, 'local-sermon-schema.json');
 const bibleLimits = JSON.parse(readFileSync(join(scriptDir, 'bible-limits.json'), 'utf8'));
@@ -19,7 +20,7 @@ const bibleCodes = [
 ];
 const bibleCodeByName = new Map(Object.keys(bibleLimits).map((name, index) => [name, bibleCodes[index]]));
 const bibleBookCache = new Map();
-const allowedOrigin = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+const allowedOrigin = /^(https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?|https:\/\/localhost|capacitor:\/\/localhost)$/;
 const topicGuide = `
 anxiety | 마태복음 6장 25-34절 | 불안과 걱정
 discouragement | 시편 42편 1-11절 | 낙심과 무기력
@@ -71,6 +72,17 @@ function authorized(request) {
   const expectedBuffer = Buffer.from(AUTH_TOKEN);
   const receivedBuffer = Buffer.from(received);
   return expectedBuffer.length === receivedBuffer.length && timingSafeEqual(expectedBuffer, receivedBuffer);
+}
+
+function allowedClientAddress(address) {
+  const normalized = String(address || '').replace(/^::ffff:/, '');
+  const loopback = normalized === '127.0.0.1' || normalized === '::1';
+  if (HOST === '127.0.0.1' || HOST === 'localhost') return loopback;
+  if (loopback) return true;
+  if (/^10\./.test(normalized) || /^192\.168\./.test(normalized) || /^169\.254\./.test(normalized)) return true;
+  const match172 = normalized.match(/^172\.(\d{1,3})\./);
+  if (match172 && Number(match172[1]) >= 16 && Number(match172[1]) <= 31) return true;
+  return /^(fc|fd|fe80):/i.test(normalized);
 }
 
 function sendJson(response, status, value, origin) {
@@ -185,7 +197,7 @@ function childEnvironment() {
   return environment;
 }
 
-function passageText(passage) {
+function chaptersFor(passage) {
   const code = bibleCodeByName.get(passage.book);
   if (!code) throw httpError(400, 'unknown_bible_book');
   let chapters = bibleBookCache.get(code);
@@ -195,6 +207,11 @@ function passageText(passage) {
     chapters = payload.chapters;
     bibleBookCache.set(code, chapters);
   }
+  return chapters;
+}
+
+function passageText(passage) {
+  const chapters = chaptersFor(passage);
   const chapter = chapters[passage.chapter - 1];
   const selected = chapter?.slice(passage.start - 1, passage.end);
   if (!Array.isArray(selected) || selected.length !== passage.end - passage.start + 1 || selected.some((text) => typeof text !== 'string' || !text.trim())) {
@@ -203,28 +220,64 @@ function passageText(passage) {
   return selected.map((text, index) => `${passage.start + index}절 ${text}`).join('\n');
 }
 
+function adjacentContextText(passage) {
+  const chapters = chaptersFor(passage);
+  const current = chapters[passage.chapter - 1];
+  const before = passage.start > 1
+    ? current.slice(Math.max(0, passage.start - 4), passage.start - 1).map((text, index, items) => `${passage.book} ${passage.chapter}장 ${passage.start - items.length + index}절 ${text}`)
+    : (chapters[passage.chapter - 2] ?? []).slice(-3).map((text, index, items) => `${passage.book} ${passage.chapter - 1}장 ${(chapters[passage.chapter - 2]?.length ?? 0) - items.length + index + 1}절 ${text}`);
+  const after = passage.end < current.length
+    ? current.slice(passage.end, passage.end + 3).map((text, index) => `${passage.book} ${passage.chapter}장 ${passage.end + index + 1}절 ${text}`)
+    : (chapters[passage.chapter] ?? []).slice(0, 3).map((text, index) => `${passage.book} ${passage.chapter + 1}장 ${index + 1}절 ${text}`);
+  return [...before, ...after].join('\n') || '같은 책 안에서 제공할 인접 절이 없습니다.';
+}
+
 function sermonRules(passage) {
   return `- passageSections는 ${passage.start}절부터 ${passage.end}절까지를 처음부터 끝까지 순서대로 빠짐없이 덮어야 합니다.
 - passageSections 사이에 절의 누락·중복이 없어야 하고, 첫 start는 ${passage.start}, 마지막 end는 ${passage.end}여야 합니다.
 - 절 수를 기계적으로 똑같이 나누지 말고 이야기, 논리, 장면, 반복어가 실제로 바뀌는 경계에서 1-6개의 의미 단락으로 나누세요. 짧은 본문은 한 단락이어도 됩니다.
 - 각 passageSections의 title에는 그 구간이 전하는 핵심을 담고, explanation은 해당 절들의 구체적인 내용과 전체 본문 안에서의 역할을 2-4문장으로 설명하세요.
-- 설교는 실제 예배 설교처럼 도입 → 역사적·문학적 맥락 → 구간별 강해 → 복음과 성경 전체의 연결 → 2026년 한국의 구체적 적용 → 오해 방지 → 결단 → 기도로 자연스럽게 이어지게 하세요.
-- opening과 context, 각 points의 body는 짧은 요약 한두 문장으로 끝내지 말고, 듣는 사람이 본문을 이해하고 마음에 새길 수 있도록 충분히 풀어 쓰세요.`;
+- manuscript.sections도 passageSections와 같은 절 경계를 사용하고, ${passage.start}절부터 ${passage.end}절까지 누락·중복 없이 덮으세요.
+- manuscript는 화면용 요약이 아니라 TTS로 그대로 읽을 실제 구두 설교 원고입니다. 도입 → 맥락 → 구간별 강해 → 은혜와 복음의 연결 → 2026년 한국의 구체적 적용 → 결단 → 기도가 한 편으로 자연스럽게 이어져야 합니다.
+- manuscript 전체는 본문 낭독을 제외하고 한국어 3,200-4,800자, 약 9-14분 분량으로 작성하세요. 제목이나 목록을 늘어놓지 말고 각 문단을 충분히 풀어 쓰세요.
+- 각 manuscript section은 반드시 해당 절의 구체적인 말·행동·대조를 먼저 관찰하고, 쉬운 뜻 → 인간의 두려움이나 욕망 → 하나님의 은혜 → 오늘의 응답 순으로 전개하세요.
+- 하나의 중심 명제와 이미지 또는 대조를 설교 전체에서 2-4회 발전시켜 되돌려 사용하세요. 같은 문장을 기계적으로 반복하지 마세요.
+- 도입은 이 본문과 맞닿은 구체적인 일상 장면이나 질문으로 시작하고, 결론은 그 장면으로 돌아와 오늘 가능한 한 가지 응답을 권하세요.
+- 2026년 한국의 직장, 취업, 주거, 돌봄, 학교, 가정, 교회, 온라인 관계 중 본문과 실제로 맞는 1-2가지만 선택해 깊이 연결하세요. 모든 분야를 나열하지 마세요.
+- 소리 내어 읽기 자연스러운 존댓말과 구어체를 쓰고, 공감 → 설명 → 은혜 → 초청의 순서를 지키세요. “사랑하는 여러분” 같은 목회적 호칭은 자연스럽게만 사용하세요.
+- AI가 실제 목회 경험이 있는 것처럼 말하거나, 검증되지 않은 인물 일화·통계·정확한 인용을 만들지 마세요.
+- 특정 교회나 목회자의 고유한 제목, 캐치프레이즈, 말버릇, 개인 경험, 예화를 복제하지 마세요.
+- opening, context, points와 study 항목은 manuscript를 이해하도록 돕는 요약 자료이며 manuscript를 대신하지 않습니다.`;
 }
 
 function sectionsCoverPassage(result, passage) {
   const sections = result?.sermon?.passageSections;
-  return Array.isArray(sections) && sections.length >= 1
-    && sections[0]?.start === passage.start
-    && sections.at(-1)?.end === passage.end
-    && sections.every((section, index) => Number.isInteger(section.start) && Number.isInteger(section.end)
+  const manuscript = result?.sermon?.manuscript;
+  const manuscriptSections = manuscript?.sections;
+  const manuscriptText = manuscript && [
+    ...(manuscript.introduction ?? []),
+    ...(manuscriptSections ?? []).flatMap((section) => [...(section.paragraphs ?? []), section.bridgeToNext ?? '']),
+    ...(manuscript.gospelConnection ?? []),
+    ...(manuscript.conclusion ?? []),
+    manuscript.closingPrayer ?? '',
+  ].join('');
+  const covers = (items) => Array.isArray(items) && items.length >= 1
+    && items[0]?.start === passage.start
+    && items.at(-1)?.end === passage.end
+    && items.every((section, index) => Number.isInteger(section.start) && Number.isInteger(section.end)
       && section.start <= section.end
-      && (index === 0 || section.start === sections[index - 1].end + 1));
+      && (index === 0 || section.start === items[index - 1].end + 1));
+  return covers(sections)
+    && covers(manuscriptSections)
+    && manuscriptSections.every((section, index) => section.start === sections[index]?.start && section.end === sections[index]?.end)
+    && typeof manuscriptText === 'string' && manuscriptText.length >= 2600
+    && Number.isInteger(manuscript.estimatedMinutes) && manuscript.estimatedMinutes >= 9 && manuscript.estimatedMinutes <= 18;
 }
 
 function promptFor(concern, topicId) {
   const passage = topicPassages[topicId];
   const selectedText = passageText(passage);
+  const adjacentText = adjacentContextText(passage);
   return `당신은 한국어 성경 이해를 돕는 온유한 말씀 길잡이입니다. 다음 개인 고민과 이미 추천된 본문을 읽고, 2026년 한국의 일상에 맞는 설교형 해설을 JSON 스키마에 맞춰 작성하세요.
 
 중요한 규칙:
@@ -238,7 +291,6 @@ function promptFor(concern, topicId) {
 - 자해·자살 위험이 느껴지면 urgent를 self_harm으로, 폭력·성폭력·스토킹·감금·협박 피해 위험이면 violence로 설정하세요. 두 위험이 함께 있으면 both, 다른 사람을 해칠 위험이면 harm_to_others, 타해와 자해·폭력 피해가 함께 있으면 complex_danger, 그 외에는 none입니다.
 - points, applications, questions는 각각 정확히 3개, crossReferences는 정확히 2개를 만드세요.
 ${sermonRules(passage)}
-- 하늘산성감리교회에서 볼 법한 친근한 흐름(일상 도입 → 문맥 → 삶의 적용 → 결단)을 참고하되, 특정 목회자의 말투를 복제하거나 권위를 사칭하지 마세요.
 - JSON 외의 설명이나 마크다운을 출력하지 마세요.
 
 허용된 주제와 본문:
@@ -248,6 +300,10 @@ ${topicGuide}
 ${selectedText}
 </selected_passage>
 
+<adjacent_context purpose="문맥 확인 전용, 설교 범위에 포함하지 않음">
+${adjacentText}
+</adjacent_context>
+
 <user_concern_json>
 ${JSON.stringify(concern)}
 </user_concern_json>`;
@@ -255,6 +311,7 @@ ${JSON.stringify(concern)}
 
 function promptForPassage(passage) {
   const selectedText = passageText(passage);
+  const adjacentText = adjacentContextText(passage);
   return `당신은 한국어 성경 이해를 돕는 온유한 말씀 길잡이입니다. 선택된 성경 단락을 정확한 앞뒤 문맥 안에서 풀고, 2026년 한국의 일상에 연결한 설교형 해설을 JSON 스키마에 맞춰 작성하세요.
 
 중요한 규칙:
@@ -267,12 +324,15 @@ function promptForPassage(passage) {
 - 2026년 한국의 직장, 학교, 가정, 교회, 온라인 문화에 연결하되 정파적 주장이나 특정 집단 비난은 피하세요.
 - points, applications, questions는 각각 정확히 3개, crossReferences는 정확히 2개를 만드세요.
 ${sermonRules(passage)}
-- 하늘산성감리교회에서 볼 법한 친근한 흐름(일상 도입 → 문맥 → 삶의 적용 → 결단)을 참고하되, 특정 목회자의 말투를 복제하거나 권위를 사칭하지 마세요.
 - JSON 외의 설명이나 마크다운을 출력하지 마세요.
 
 <selected_passage translation="PLAY X 성경, CC BY 4.0">
 ${selectedText}
-</selected_passage>`;
+</selected_passage>
+
+<adjacent_context purpose="문맥 확인 전용, 설교 범위에 포함하지 않음">
+${adjacentText}
+</adjacent_context>`;
 }
 
 async function runCodex(prompt, signal) {
@@ -281,6 +341,7 @@ async function runCodex(prompt, signal) {
   const executable = process.platform === 'win32' ? 'codex.exe' : 'codex';
   const args = [
     '--ask-for-approval', 'never',
+    '--config', 'model_reasoning_effort="low"',
     'exec', '-',
     '--ephemeral',
     '--ignore-rules',
@@ -322,12 +383,12 @@ async function runCodex(prompt, signal) {
       const timeout = setTimeout(() => {
         timedOut = true;
         void terminateTree(child);
-      }, 110_000);
+      }, GENERATION_TIMEOUT_MS);
       const hardTimeout = setTimeout(() => {
         timedOut = true;
         void terminateTree(child);
         finish(new Error('codex_timeout'));
-      }, 116_000);
+      }, GENERATION_TIMEOUT_MS + 6_000);
       const abortChild = () => {
         if (abortStarted) return;
         abortStarted = true;
@@ -367,8 +428,8 @@ async function runCodex(prompt, signal) {
 
 const server = createServer(async (request, response) => {
   const address = request.socket.remoteAddress;
-  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') {
-    sendJson(response, 403, { error: 'loopback_only' });
+  if (!allowedClientAddress(address)) {
+    sendJson(response, 403, { error: 'private_network_only' });
     return;
   }
 
@@ -391,6 +452,10 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === 'GET' && request.url === '/health') {
+    if (!authorized(request)) {
+      sendJson(response, 401, { error: 'unauthorized' }, origin);
+      return;
+    }
     sendJson(response, 200, { ok: true, provider: 'codex-cli', busy: running || activeChildren.size > 0 }, origin);
     return;
   }
@@ -475,7 +540,7 @@ if (!AUTH_TOKEN) {
 } else {
   server.listen(PORT, HOST, () => {
     console.log(`개인용 Codex 말씀 서버: http://${HOST}:${PORT}`);
-    console.log('이 서버는 이 컴퓨터에서만 접속할 수 있습니다.');
+    console.log(HOST === '127.0.0.1' ? '이 서버는 이 컴퓨터에서만 접속할 수 있습니다.' : '이 서버는 같은 사설 네트워크의 인증된 기기에서만 사용할 수 있습니다.');
   });
 }
 
